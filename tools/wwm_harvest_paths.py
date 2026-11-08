@@ -8,7 +8,7 @@ Serialized UI/scene objects reference other assets by path ("UIScript/x.csb",
 against the manifest, which names otherwise anonymous textures.
 
 Usage:
-  wwm_harvest_paths.py <install_root> -o paths.txt [-j N] [--max-size BYTES]
+  wwm_harvest_paths.py <install_root> -o paths.txt [-j N] [--max-size BYTES] [--save-csb DIR]
   wwm_harvest_paths.py --match paths.txt --manifest manifest.csv -o names.csv
 """
 
@@ -106,35 +106,60 @@ def file_id(path: str) -> int:
 # --------------------------------------------------------------------------
 
 
-def harvest_pack(args: tuple[str, list, int]) -> set[bytes]:
-    container, entries, max_size = args
+def looks_like_csb(buf: bytes) -> bool:
+    """FlatBuffer whose root table is CSParseBinary: version string "1.0" reachable at field 0."""
+    if len(buf) < 32:
+        return False
+    try:
+        root = struct.unpack_from("<I", buf, 0)[0]
+        vt = root - struct.unpack_from("<i", buf, root)[0]
+        vsize = struct.unpack_from("<H", buf, vt)[0]
+        if vsize < 16:
+            return False
+        off = struct.unpack_from("<H", buf, vt + 4)[0]
+        sp = root + off
+        sp += struct.unpack_from("<I", buf, sp)[0]
+        n = struct.unpack_from("<I", buf, sp)[0]
+        return 1 <= n <= 8 and buf[sp + 4 : sp + 4 + n] in (b"1.0", b"2.0", b"1.1", b"2.1")
+    except (struct.error, IndexError):
+        return False
+
+
+def harvest_pack(args: tuple[str, list, int, str | None]) -> tuple[set[bytes], int]:
+    container, entries, max_size, save_dir = args
     found: set[bytes] = set()
+    saved = 0
     try:
         pack = wt.Pack(container)
     except OSError:
-        return found
+        return found, saved
     if pack.blocks is not None:
-        payloads = (b.data for b in pack.blocks)
+        payloads = ((None, b.data) for b in pack.blocks)
     else:
         def gen():
             for e in sorted(entries, key=lambda e: e.offset):
                 if e.size > max_size or e.offset + e.size > pack.size:
                     continue
-                yield pack.read(e.offset, e.size)
+                yield e, pack.read(e.offset, e.size)
         payloads = gen()
-    for buf in payloads:
+    for entry, buf in payloads:
         if buf[:4] in (b"EZST", b"ZSTD"):
             try:
                 buf = wt.ezst_decode(buf)
             except Exception:
                 continue
-        if buf[:4] == wt.TEX_MAGIC or buf[:4] in (b"RIFF", b"BKHD", b"ZZZ4", b"LZMA"):
+        if buf[:4] == wt.TEX_MAGIC or buf[:4] in (b"RIFF", b"BKHD", b"ZZZ4", b"LZMA", b".MES"):
             continue
-        for m in PATH_RE.finditer(buf):
+        if save_dir and entry is not None and looks_like_csb(buf):
+            Path(save_dir, f"{entry.file_id:016x}.csb").write_bytes(buf)
+            saved += 1
+        for i, m in enumerate(PATH_RE.finditer(buf)):
+            if i > 20000:
+                break
             s = m.group(0)
             if s.rsplit(b".", 1)[-1].lower() in EXTS:
                 found.add(s.strip())
-    return found
+    return found, saved
 
 
 def cmd_harvest(args: argparse.Namespace) -> None:
@@ -143,14 +168,19 @@ def cmd_harvest(args: argparse.Namespace) -> None:
     by_container: dict[str, list] = defaultdict(list)
     for e in entries:
         by_container[e.container].append(e)
-    jobs = [(c, es, args.max_size) for c, es in sorted(by_container.items())]
+    if args.save_csb:
+        Path(args.save_csb).mkdir(parents=True, exist_ok=True)
+    jobs = [(c, es, args.max_size, args.save_csb) for c, es in sorted(by_container.items())]
     print(f"{len(entries)} entries in {len(jobs)} containers", flush=True)
     found: set[bytes] = set()
-    with mp.Pool(args.jobs) as pool:
-        for i, s in enumerate(pool.imap_unordered(harvest_pack, jobs), 1):
+    saved = 0
+    # spawn: workers must not inherit the parent's full index (copy-on-write blow-up)
+    with mp.get_context("spawn").Pool(args.jobs, maxtasksperchild=8) as pool:
+        for i, (s, n) in enumerate(pool.imap_unordered(harvest_pack, jobs), 1):
             found |= s
+            saved += n
             if i % 20 == 0 or i == len(jobs):
-                print(f"[{i}/{len(jobs)}] {len(found)} unique paths", flush=True)
+                print(f"[{i}/{len(jobs)}] {len(found)} unique paths, {saved} csb saved", flush=True)
     with open(args.output, "wb") as f:
         for s in sorted(found):
             f.write(s + b"\n")
@@ -183,7 +213,8 @@ def main() -> None:
     ap.add_argument("install_root", nargs="?")
     ap.add_argument("-o", "--output", required=True)
     ap.add_argument("-j", "--jobs", type=int, default=max(1, (os.cpu_count() or 4) - 2))
-    ap.add_argument("--max-size", type=int, default=2_000_000, help="skip payloads larger than this")
+    ap.add_argument("--max-size", type=int, default=512_000, help="skip payloads larger than this")
+    ap.add_argument("--save-csb", metavar="DIR", help="also save every Cocos .csb payload here as <file_id>.csb")
     ap.add_argument("--match", metavar="PATHS", help="match harvested paths against a manifest instead")
     ap.add_argument("--manifest")
     args = ap.parse_args()

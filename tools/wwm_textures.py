@@ -597,7 +597,8 @@ def cmd_extract(args: argparse.Namespace) -> None:
     totals: Counter = Counter()
     kinds_total: Counter = Counter()
     t0 = time.time()
-    with mp.Pool(args.jobs) as pool:
+    # spawn: workers must not inherit the parent's full index (copy-on-write blow-up)
+    with mp.get_context("spawn").Pool(args.jobs) as pool:
         for i, (container, results, kinds) in enumerate(pool.imap_unordered(process_pack, jobs), 1):
             kinds_total.update(kinds)
             for r in results:

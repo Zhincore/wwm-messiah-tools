@@ -2198,6 +2198,22 @@ null
 "Options",
 null
 ]
+],
+"SplendorOptions": [
+[
+"nodeOptions",
+4,
+"table",
+"WidgetOptions",
+null
+],
+[
+"effect",
+6,
+"string",
+null,
+null
+]
 ]
 }
 }

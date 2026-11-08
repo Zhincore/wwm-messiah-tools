@@ -29,7 +29,8 @@ STRUCT_FIELD_TYPES = {"float": "<f", "int32_t": "<i", "uint8_t": "<B", "int": "<
 CLASS_TABLE = {
     "Node": "SingleNodeOptions", "Layer": "SingleNodeOptions", "Sprite": "SpriteOptions",
     "Particle": "ParticleSystemOptions", "GameMap": "GameMapOptions", "ProjectNode": "ProjectNodeOptions",
-    "ComAudio": "ComAudioOptions", "Widget": "WidgetOptions",
+    "ComAudio": "ComAudioOptions", "Widget": "WidgetOptions", "Layout": "PanelOptions",
+    "Splendor": "SplendorOptions",  # NetEase shader-effect node: effect = "UI/UI<Effect>" material
 }
 
 
@@ -38,13 +39,19 @@ class Reader:
         self.b = buf
 
     def u32(self, pos: int) -> int:
+        if not 0 <= pos <= len(self.b) - 4:
+            raise ValueError(f"offset {pos} outside buffer")
         return struct.unpack_from("<I", self.b, pos)[0]
 
     def i32(self, pos: int) -> int:
+        if not 0 <= pos <= len(self.b) - 4:
+            raise ValueError(f"offset {pos} outside buffer")
         return struct.unpack_from("<i", self.b, pos)[0]
 
     def string(self, pos: int) -> str:
         n = self.u32(pos)
+        if pos + 4 + n > len(self.b):
+            raise ValueError("string outside buffer")
         return self.b[pos + 4 : pos + 4 + n].decode("utf-8", errors="replace")
 
     def field_pos(self, table: int, voffset: int) -> int | None:
@@ -62,6 +69,16 @@ class Reader:
             out[fname] = struct.unpack_from(fmt, self.b, pos)[0]
             pos += struct.calcsize(fmt)
         return out
+
+    def _widget_only(self, tpos: int) -> dict:
+        """Options whose first field is the common WidgetOptions table, nothing else."""
+        fp = self.field_pos(tpos, 4)
+        if fp is None:
+            return {}
+        try:
+            return {"widgetOptions": self.table(fp + self.u32(fp), "WidgetOptions")}
+        except (ValueError, struct.error):
+            return {}
 
     def table(self, pos: int, name: str, classname: str | None = None) -> dict:
         out: dict = {}
@@ -87,8 +104,13 @@ class Reader:
                     tname = CLASS_TABLE.get(classname or "", f"{classname}Options")
                     if tname not in SCHEMA["tables"]:
                         tname = "WidgetOptions"
-                    out[fname] = self.table(tpos, tname)
-                    out["_options_type"] = tname
+                    try:
+                        out[fname] = self.table(tpos, tname)
+                        out["_options_type"] = tname
+                    except (ValueError, struct.error, KeyError):
+                        # unknown/extended class: keep only the common widget options
+                        out[fname] = self._widget_only(tpos)
+                        out["_options_type"] = f"unknown:{classname}"
                 else:
                     out[fname] = self.table(tpos, targ)
             elif kind == "vector_table":
@@ -106,8 +128,12 @@ class Reader:
             elif kind == "vector_scalar":
                 vpos = fp + self.u32(fp)
                 n = self.u32(vpos)
-                fmt, size = SCALARS[targ]
-                out[fname] = [struct.unpack_from(fmt, self.b, vpos + 4 + i * size)[0] for i in range(n)]
+                if targ in SCHEMA["structs"]:  # vector of inline structs
+                    size = sum(struct.calcsize(STRUCT_FIELD_TYPES.get(t, "<f")) for _, t in SCHEMA["structs"][targ])
+                    out[fname] = [self.struct_(vpos + 4 + i * size, targ) for i in range(n)]
+                else:
+                    fmt, size = SCALARS[targ]
+                    out[fname] = [struct.unpack_from(fmt, self.b, vpos + 4 + i * size)[0] for i in range(n)]
         if name in ("NodeTree", "ProjectNodeOverride") and "options" in out:
             # re-decode options with the right type now that classname is known
             fp = self.field_pos(pos, 8)
