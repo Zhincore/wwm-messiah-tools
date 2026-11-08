@@ -7,6 +7,8 @@ Detected by content, not by extension:
   HEXB_ ... same transport, payload is msgpack
   shift1    every byte + 1 (e.g. LocalData/game_account.log)
   CLv2      ClientLocalLog/*.bin: u32be length + base64 records, each HEX transport around msgpack
+  LZ4 frame LocalData/TextContent/*: compressed text (character preset JSON)
+  SQLite    LocalData/LocalDB/*: localdb table, content = msgpack XOR NetEase key
 
 Usage:
   wwm_decode_text.py FILE [FILE ...]            print decoded content to stdout
@@ -88,6 +90,29 @@ def decode_clv2(data: bytes) -> str:
     return "\n".join(out) + "\n"
 
 
+def decode_localdb(path: Path) -> str:
+    """
+    LocalData/LocalDB/* SQLite: table localdb(id, key, scope, content BLOB).
+    content = msgpack XORed with the NetEase key (no base64/zlib). Returns JSON lines.
+    """
+    import sqlite3  # noqa: PLC0415
+
+    import msgpack  # noqa: PLC0415
+
+    con = sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True)
+    out = []
+    try:
+        for rid, key, scope, content in con.execute("select id, key, scope, content from localdb"):
+            try:
+                value = to_jsonable(msgpack.unpackb(xor_repeat(content, HEX_XOR_KEY), raw=True, strict_map_key=False))
+            except Exception as e:  # noqa: BLE001 - keep the row, mark it
+                value = {"_undecoded": content.hex(), "_error": str(e)}
+            out.append(json.dumps({"id": rid, "key": key, "scope": scope, "value": value}, ensure_ascii=False))
+    finally:
+        con.close()
+    return "\n".join(out) + "\n"
+
+
 def looks_shift1(data: bytes) -> bool:
     """Shift-1 text: after -1 the head is printable and newlines appear as 0x0b."""
     head = bytes((b - 1) & 0xFF for b in data[:256])
@@ -103,6 +128,12 @@ def decode_file(path: Path) -> tuple[str, str]:
         return f"hex:{kind}", text
     if data[:4] == b"CLv2":
         return "clv2", decode_clv2(data)
+    if data[:15] == b"SQLite format 3":
+        return "localdb", decode_localdb(path)
+    if data[:4] == b"\x04\x22\x4d\x18":  # LZ4 frame (LocalData/TextContent/*)
+        import lz4.frame  # noqa: PLC0415
+
+        return "lz4", lz4.frame.decompress(data).decode("utf-8", errors="replace")
     if looks_shift1(data):
         return "shift1", bytes((b - 1) & 0xFF for b in data).decode("utf-8", errors="replace")
     return "plain", data.decode("utf-8", errors="replace")
@@ -124,7 +155,7 @@ def main() -> int:
             rc = 1
             continue
         if args.out_dir:
-            ext = {"hex:json": ".json", "hex:msgpack": ".json", "clv2": ".jsonl"}.get(kind, ".txt")
+            ext = {"hex:json": ".json", "hex:msgpack": ".json", "clv2": ".jsonl", "localdb": ".jsonl"}.get(kind, ".txt")
             out = args.out_dir / (path.name + ext)
             out.write_text(text, encoding="utf-8")
             print(f"{path} [{kind}] -> {out}")

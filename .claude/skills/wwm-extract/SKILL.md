@@ -31,7 +31,8 @@ Output: `<out>/<source>/<file_id>.png` (top mip), `.dds` when Pillow cannot deco
 ## Text files
 `.venv/bin/python tools/wwm_decode_text.py <files...> [-o <dir>]`
 Sniffs `HEX_` (JSON), `HEXB_` (msgpack), `CLv2` combat logs (`ClientLocalLog/**/*.bin` → JSON lines),
-shift-1 logs (`game_account.log`), plain.
+SQLite `LocalDB/db_*` (msgpack XOR key → JSON lines), LZ4 `TextContent/*`, shift-1 logs
+(`game_account.log`), plain. Deps: `msgpack lz4`.
 `game_account.log` and `avatarinfo.txt` contain account identifiers: do not paste them.
 
 ## Gotchas

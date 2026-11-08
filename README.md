@@ -10,7 +10,7 @@ packs. The v1 code paths are kept for reference; everything WWM-specific is new.
 ## Quick start
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install pillow pycryptodome zstandard msgpack
+python3 -m venv .venv && .venv/bin/pip install pillow pycryptodome zstandard msgpack lz4
 .venv/bin/python tools/wwm_textures.py scan    /path/to/wwm
 .venv/bin/python tools/wwm_textures.py extract /path/to/wwm -o /big/disk/wwm_textures -j 8
 # interrupted? continue where it stopped:
@@ -80,6 +80,10 @@ blocks; shaders use `ZZZ4` (LZ4) + DXBC; audio is Wwise (`RIFF`/`BKHD`). Not han
 length + base64 body; each body is the HEX transport around msgpack. Record `[-3, {...}]` is the
 session header (logger, session id, space/config), `[-2, ts, [entity_ids], [events]]` is an
 event batch; events are `[event_type, tick, ?, subtype, payload...]` (combat/position telemetry).
+`LocalData/LocalDB/db_*` (SQLite, table `localdb(id,key,scope,content)`): `content` is msgpack XORed
+with the same NetEase key, no base64/zlib (chat history, UI/red-dot state, caches).
+`LocalData/TextContent/*`: LZ4 frames around JSON (character preset variables).
+`Package/Other/{enc_c,enc_g,dev_i}.bin`: `HEX_` around plain text / JSON (CPU/GPU block and tier lists).
 `tools/wwm_decode_text.py` handles all of these by sniffing content.
 
 ## Layout
