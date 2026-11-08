@@ -1,3 +1,14 @@
+pub mod v3_extractor;
+pub mod v3_parser;
+
+// Re-export commonly used types
+pub use v3_extractor::{ExtractedFileInfo, ExtractorConfig, MPKv3Extractor};
+pub use v3_parser::{
+    CompressionType, MPKv3Decompressor, MPKv3Entry, MPKv3Error, MPKv3Header, MPKv3Parser,
+    MPKv3Stats,
+};
+
+// Legacy v1 support (kept for backwards compatibility)
 use anyhow::Context;
 use byteorder::{LittleEndian, ReadBytesExt};
 use std::collections::HashMap;
@@ -36,7 +47,6 @@ impl MPKFileHeader {
         T: std::io::Seek,
     {
         let version = reader.read_u32::<LittleEndian>()?;
-        assert!(version == 1);
         let file_count = reader.read_u32::<LittleEndian>()?;
         Ok(Self {
             version,
@@ -62,11 +72,6 @@ impl MPKFileReader {
             .with_context(|| format!("Failed to read .mpkinfo file from {:?}", path))?;
         let mut reader = BufReader::new(&file);
         let header = MPKFileHeader::read_header(&mut reader)?;
-
-        assert!(
-            header.version == 1,
-            "Currently only MPK Version 1 is supported"
-        );
 
         // Read indices
         let mut files = Vec::new();
@@ -99,8 +104,6 @@ impl MPKFileReader {
         })
     }
 
-    // TODO(alexander): Add interface to operate on files
-
     pub fn extract_files<P: AsRef<std::path::Path>>(&self, out_dir: P) -> anyhow::Result<()> {
         use indicatif::ProgressBar;
 
@@ -132,7 +135,6 @@ impl MPKFileReader {
                 let mut magic = vec![0; 4];
                 let _ = reader.read_exact(&mut magic);
 
-                // TODO(alexander): This _should_ probably be optional
                 let file_buffer = if magic == b"ZZZ4" {
                     lz4_flex::decompress_size_prepended(&file_buffer[4..])?
                 } else if magic == b"CCCC" {
@@ -142,9 +144,6 @@ impl MPKFileReader {
                         let uncompressed_size = reader.read_i32::<LittleEndian>()?;
                         let mut buffer = vec![0; 0 as usize];
                         reader.read_to_end(&mut buffer)?;
-                        // There is an unknown "overhang" of 20 bytes at the end, no idea what it is
-                        // Ignore for now
-                        // _could_ be a sha1 actually
                         lz4_flex::decompress(
                             &buffer[..buffer.len() - 20],
                             uncompressed_size as usize,
@@ -153,9 +152,6 @@ impl MPKFileReader {
                         file_buffer
                     }
                 } else if &magic[..2] == b"\xE2\x06" {
-                    // This is a mangled zlib compressed file
-                    // TODO(alexander): Move handling of these to a new crate
-                    // TODO(alexander): Reduce number of vec allocations
                     reader.seek(SeekFrom::Start(0))?;
                     let mut buffer = vec![0; 0 as usize];
                     reader.read_to_end(&mut buffer)?;
@@ -163,7 +159,6 @@ impl MPKFileReader {
                     let offset = (buffer.len() - 8) % 37;
                     let end = 128 - offset;
                     let end = end.min(buffer.len());
-                    // eprintln!("{} {} {}", buffer.len(), offset, end);
                     let head = &mut buffer[..end];
                     for x in head.iter_mut() {
                         *x = *x ^ 154;
