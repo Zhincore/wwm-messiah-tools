@@ -6,6 +6,7 @@ Detected by content, not by extension:
   HEX_  ... base64 -> XOR(repeating "netease_hex_xor_encrypt_key") -> zlib -> JSON
   HEXB_ ... same transport, payload is msgpack
   shift1    every byte + 1 (e.g. LocalData/game_account.log)
+  CLv2      ClientLocalLog/*.bin: u32be length + base64 records, each HEX transport around msgpack
 
 Usage:
   wwm_decode_text.py FILE [FILE ...]            print decoded content to stdout
@@ -69,6 +70,24 @@ def decode_payload(raw: bytes) -> tuple[str, str]:
         return "raw", raw.decode("utf-8", errors="replace")
 
 
+def decode_clv2(data: bytes) -> str:
+    """
+    ClientLocalLog/*.bin: "CLv2" then records of u32 big-endian length + base64 body.
+    Each body is the HEX transport (XOR + zlib) around msgpack. Returns JSON lines.
+    """
+    import msgpack  # noqa: PLC0415
+
+    pos, out = 4, []
+    while pos + 4 <= len(data):
+        n = int.from_bytes(data[pos : pos + 4], "big")
+        body = data[pos + 4 : pos + 4 + n]
+        pos += 4 + n
+        raw = zlib.decompress(xor_repeat(base64.b64decode(body), HEX_XOR_KEY))
+        obj = msgpack.unpackb(raw, raw=True, strict_map_key=False)
+        out.append(json.dumps(to_jsonable(obj), ensure_ascii=False))
+    return "\n".join(out) + "\n"
+
+
 def looks_shift1(data: bytes) -> bool:
     """Shift-1 text: after -1 the head is printable and newlines appear as 0x0b."""
     head = bytes((b - 1) & 0xFF for b in data[:256])
@@ -82,6 +101,8 @@ def decode_file(path: Path) -> tuple[str, str]:
     if any(head.startswith(p.encode()) for p in PREFIXES):
         kind, text = decode_payload(decode_hex(data.decode("ascii")))
         return f"hex:{kind}", text
+    if data[:4] == b"CLv2":
+        return "clv2", decode_clv2(data)
     if looks_shift1(data):
         return "shift1", bytes((b - 1) & 0xFF for b in data).decode("utf-8", errors="replace")
     return "plain", data.decode("utf-8", errors="replace")
@@ -103,7 +124,7 @@ def main() -> int:
             rc = 1
             continue
         if args.out_dir:
-            ext = ".json" if kind in ("hex:json", "hex:msgpack") else ".txt"
+            ext = {"hex:json": ".json", "hex:msgpack": ".json", "clv2": ".jsonl"}.get(kind, ".txt")
             out = args.out_dir / (path.name + ext)
             out.write_text(text, encoding="utf-8")
             print(f"{path} [{kind}] -> {out}")

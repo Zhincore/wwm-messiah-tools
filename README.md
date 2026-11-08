@@ -75,8 +75,12 @@ blocks; shaders use `ZZZ4` (LZ4) + DXBC; audio is Wwise (`RIFF`/`BKHD`). Not han
 `HEX_`/`HEXB_` prefixed files (`patch_config.json`, `essential.txt`, `avatarinfo.txt`,
 `engine_features_*`, patchlists, some `.mpkinfo`): base64 → XOR with the repeating key
 `netease_hex_xor_encrypt_key` → zlib → JSON (`HEX_`) or msgpack (`HEXB_`).
-`LocalData/game_account.log`: every byte shifted by +1. `tools/wwm_decode_text.py` handles
-all three by sniffing content.
+`LocalData/game_account.log`: every byte shifted by +1.
+`LocalData/ClientLocalLog/<role>/<mode>/*.bin`: `CLv2` magic, then records of u32 big-endian
+length + base64 body; each body is the HEX transport around msgpack. Record `[-3, {...}]` is the
+session header (logger, session id, space/config), `[-2, ts, [entity_ids], [events]]` is an
+event batch; events are `[event_type, tick, ?, subtype, payload...]` (combat/position telemetry).
+`tools/wwm_decode_text.py` handles all of these by sniffing content.
 
 ## Layout
 - `tools/wwm_textures.py` — texture/image extractor (Python)

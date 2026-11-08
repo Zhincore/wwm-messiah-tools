@@ -30,7 +30,8 @@ Output: `<out>/<source>/<file_id>.png` (top mip), `.dds` when Pillow cannot deco
 
 ## Text files
 `.venv/bin/python tools/wwm_decode_text.py <files...> [-o <dir>]`
-Sniffs `HEX_` (JSON), `HEXB_` (msgpack), shift-1 logs (`game_account.log`), plain.
+Sniffs `HEX_` (JSON), `HEXB_` (msgpack), `CLv2` combat logs (`ClientLocalLog/**/*.bin` → JSON lines),
+shift-1 logs (`game_account.log`), plain.
 `game_account.log` and `avatarinfo.txt` contain account identifiers: do not paste them.
 
 ## Gotchas
