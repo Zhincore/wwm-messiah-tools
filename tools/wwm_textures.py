@@ -26,6 +26,7 @@ import argparse
 import csv
 import hashlib
 import io
+import mmap
 import multiprocessing as mp
 import os
 import re
@@ -89,7 +90,7 @@ IMAGE_MAGICS = [
 # --------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Entry:
     file_id: int
     offset: int
@@ -203,30 +204,49 @@ def _zstd(payload: bytes, raw_size: int, verify: bool) -> bytes:
     return data
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class Block:
     phys_off: int
     phys_size: int
-    data: bytes
+    raw_size: int
 
 
 class Pack:
     """
-    One .mpk container.
+    One .mpk container, memory-mapped.
 
-    Plain packs: index offsets are physical. Block packs (start with "EZST"): every
-    index entry is one EZST block whose `size` is the physical block size. A partial
-    ("lite") install keeps only some blocks, compacted together, so index offsets do
-    not apply; the blocks are walked in order instead and matched to entries by size.
+    Plain packs: index offsets are physical. Block packs: every index entry is one EZST
+    block whose `size` is the physical block size. A partial ("lite") install keeps only
+    some blocks, compacted together, so index offsets do not apply; the blocks are walked
+    in order instead and matched to entries by size. A pack is treated as a block pack
+    only when it starts with EZST and its index entries do not tile the file exactly.
+    Block contents are decoded on demand (`block_data`), never kept resident.
     """
 
-    def __init__(self, path: str):
+    def __init__(self, path: str, entries: list[Entry] | None = None):
         self.path = path
         self.fh = open(path, "rb")
         self.size = os.fstat(self.fh.fileno()).st_size
+        self.mm = mmap.mmap(self.fh.fileno(), 0, access=mmap.ACCESS_READ) if self.size else b""
         self.blocks: list[Block] | None = None
-        if self.fh.read(4) == b"EZST":
+        if self.mm[:4] == b"EZST" and not self._index_is_physical(entries):
             self.blocks = self._walk_blocks()
+
+    KNOWN_HEADS = (b"EZST", b"ZSTD", TEX_MAGIC, b"RIFF", b"BKHD", b"ZZZ4", b"LZMA", b".MES", b"<?xm", b"CCCC")
+
+    def _index_is_physical(self, entries: list[Entry] | None) -> bool:
+        """
+        True when index offsets address this file directly: every entry lies inside the
+        file and nearly all sampled entries start with a known payload magic.
+        """
+        if not entries:
+            return False
+        if max(e.offset + e.size for e in entries) > self.size:
+            return False
+        step = max(1, len(entries) // 200)
+        sample = entries[::step]
+        hits = sum(1 for e in sample if self.mm[e.offset : e.offset + 4] in self.KNOWN_HEADS)
+        return hits >= 0.9 * len(sample)
 
     def _walk_blocks(self) -> list[Block] | None:
         """
@@ -234,8 +254,7 @@ class Pack:
         candidate block end is accepted only if the block decodes; a start that never
         decodes is a false positive and the walk resyncs. Packs may end with a tail.
         """
-        self.fh.seek(0)
-        data = self.fh.read()
+        data = self.mm
         blocks: list[Block] = []
         pos = 0
         covered = 0
@@ -256,7 +275,7 @@ class Pack:
             if decoded is None:
                 pos = data.find(b"EZST", pos + 1)
                 continue
-            blocks.append(Block(pos, end - pos, decoded))
+            blocks.append(Block(pos, end - pos, len(decoded)))
             covered += end - pos
             pos = end
         if not blocks or covered < len(data) // 2:
@@ -264,8 +283,10 @@ class Pack:
         return blocks
 
     def read(self, off: int, size: int) -> bytes:
-        self.fh.seek(off)
-        return self.fh.read(size)
+        return bytes(self.mm[off : off + size])
+
+    def block_data(self, block: Block) -> bytes:
+        return ezst_decode(self.mm[block.phys_off : block.phys_off + block.phys_size])
 
     def match_blocks(self, entries: list[Entry]) -> list[tuple[Block, Entry | None]]:
         """Greedily align physical blocks with offset-ordered index entries by size."""
@@ -464,7 +485,7 @@ def process_pack(args: tuple[str, list[Entry], str, bool, int]) -> tuple[str, li
     results: list[Result] = []
     kinds: Counter = Counter()
     try:
-        pack = Pack(container)
+        pack = Pack(container, entries)
     except OSError as e:
         return container, [Result(e_, "pack", "open_failed", note=str(e)) for e_ in entries], kinds
     if pack.blocks is not None:
@@ -473,7 +494,7 @@ def process_pack(args: tuple[str, list[Entry], str, bool, int]) -> tuple[str, li
             if entry is None:
                 entry = Entry(0, block.phys_off, block.phys_size, container, entries[0].source,
                               f"block@{block.phys_off}")
-            items.append((entry, block.data, "block"))
+            items.append((entry, None, block))
         kinds["unmatched_blocks"] = sum(1 for e, _, _ in items if e.file_id == 0)
     else:
         items = []
@@ -487,6 +508,12 @@ def process_pack(args: tuple[str, list[Entry], str, bool, int]) -> tuple[str, li
     for entry, buf, origin in items:
         if limit and done >= limit:
             break
+        if isinstance(origin, Block):
+            try:
+                buf = pack.block_data(origin)
+            except Exception as e:
+                results.append(Result(entry, "ezst", "decode_failed", note=str(e)))
+                continue
         head = buf[:64] if buf is not None else pack.read(entry.offset, min(entry.size, 64))
         kind = classify(head)
         if kind == "ezst":
@@ -531,12 +558,12 @@ def cmd_scan(args: argparse.Namespace) -> None:
     print(f"containers: {len(by_container)}")
     kinds: Counter = Counter()
     for container, es in sorted(by_container.items()):
-        pack = Pack(container)
+        pack = Pack(container, es)
         mx = max(e.offset + e.size for e in es)
         if pack.blocks is not None:
             matched = sum(1 for _, e in pack.match_blocks(es) if e is not None)
             for block in pack.blocks[: args.limit] if args.limit else pack.blocks:
-                kinds[(es[0].source, "block:" + classify(block.data))] += 1
+                kinds[(es[0].source, "block:" + classify(pack.block_data(block)[:16]))] += 1
             print(f"{Path(container).name:28s} blocks   entries={len(es):7d} blocks={len(pack.blocks):6d} matched={matched:6d}")
             continue
         flag = "" if mx <= pack.size else "  !! index exceeds file"

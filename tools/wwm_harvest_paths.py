@@ -130,11 +130,17 @@ def harvest_pack(args: tuple[str, list, int, str | None]) -> tuple[set[bytes], i
     found: set[bytes] = set()
     saved = 0
     try:
-        pack = wt.Pack(container)
+        pack = wt.Pack(container, entries)
     except OSError:
         return found, saved
     if pack.blocks is not None:
-        payloads = ((None, b.data) for b in pack.blocks)
+        def blocks():
+            for b in pack.blocks:
+                try:
+                    yield None, pack.block_data(b)
+                except Exception:
+                    continue
+        payloads = blocks()
     else:
         def gen():
             for e in sorted(entries, key=lambda e: e.offset):
