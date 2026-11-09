@@ -34,6 +34,8 @@ _here = Path(__file__).resolve().parent
 
 
 def _load(name):
+    if name in sys.modules:
+        return sys.modules[name]
     spec = importlib.util.spec_from_file_location(name, _here / f"{name}.py")
     mod = importlib.util.module_from_spec(spec)
     sys.modules[name] = mod

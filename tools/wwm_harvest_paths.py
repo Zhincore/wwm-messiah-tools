@@ -26,10 +26,20 @@ from collections import defaultdict
 from pathlib import Path
 
 _here = Path(__file__).resolve().parent
-_spec = importlib.util.spec_from_file_location("wwm_textures", _here / "wwm_textures.py")
-wt = importlib.util.module_from_spec(_spec)
-sys.modules["wwm_textures"] = wt
-_spec.loader.exec_module(wt)
+
+
+def load_tool(name: str):
+    """Import a sibling tool module once, by file path (tools/ is not a package)."""
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(name, _here / f"{name}.py")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+wt = load_tool("wwm_textures")
 
 PATH_RE = re.compile(rb"[A-Za-z0-9_][A-Za-z0-9_\-./@ ]{3,200}\.[a-z0-9]{1,6}")
 EXTS = {b"png", b"plist", b"csb", b"json", b"lua", b"ttf", b"fnt", b"atlas", b"skel", b"mp4", b"ogg",
