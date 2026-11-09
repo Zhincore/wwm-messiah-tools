@@ -79,7 +79,8 @@ def main() -> None:
     ap.add_argument("--paths", help="harvested paths file (for --list)")
     ap.add_argument("-o", "--output")
     ap.add_argument("--texture-id", help="file id (hex) of the atlas texture when it cannot be resolved by name")
-    ap.add_argument("--gif", action="store_true", help="also build one GIF per numbered frame sequence")
+    ap.add_argument("--gif", action="store_true", help="also build one GIF per numbered frame sequence (1-bit alpha)")
+    ap.add_argument("--webp", action="store_true", help="also build lossless animated WebP per sequence (full alpha)")
     ap.add_argument("--fps", type=float, default=10.0)
     args = ap.parse_args()
 
@@ -152,19 +153,50 @@ def main() -> None:
             seqs[m.group(1)].append((int(m.group(2)), im))
     print(f"wrote {len(frames)} frames to {out}")
 
-    if args.gif:
-        gif_dir = out / "gif"
-        gif_dir.mkdir(exist_ok=True)
+    duration = int(1000 / args.fps)
+    if args.webp:
+        webp_dir = out / "webp"
+        webp_dir.mkdir(exist_ok=True)
         n = 0
         for base, items in seqs.items():
             items.sort()
             ims = [im for _, im in items]
             if len(ims) < 2:
                 continue
+            ims[0].save(webp_dir / f"{base}.webp", save_all=True, append_images=ims[1:],
+                        duration=duration, loop=0, lossless=True, exact=True)
+            n += 1
+        print(f"wrote {n} animated WebPs (lossless, full alpha) to {webp_dir}")
+    if args.gif:
+        gif_dir = out / "gif"
+        gif_dir.mkdir(exist_ok=True)
+        n = 0
+        for base, items in seqs.items():
+            items.sort()
+            ims = [gif_frame(im) for _, im in items]
+            if len(ims) < 2:
+                continue
             ims[0].save(gif_dir / f"{base}.gif", save_all=True, append_images=ims[1:],
-                        duration=int(1000 / args.fps), loop=0, disposal=2)
+                        duration=duration, loop=0, disposal=2, transparency=255)
             n += 1
         print(f"wrote {n} GIFs to {gif_dir}")
+
+
+def gif_frame(im: Image.Image) -> Image.Image:
+    """
+    RGBA -> palette frame with a clean 1-bit alpha: pixels below the alpha threshold become
+    palette index 255 (declared transparent), everything else is quantised from premultiplied
+    colour so semi-transparent edges do not keep stray colours.
+    """
+    rgba = im.convert("RGBA")
+    alpha = rgba.getchannel("A")
+    opaque_mask = alpha.point(lambda a: 255 if a >= 96 else 0)
+    # flatten semi-transparent edge pixels against black before quantising
+    flat = Image.new("RGBA", rgba.size, (0, 0, 0, 255))
+    flat.paste(rgba, mask=alpha)
+    pal = flat.convert("RGB").quantize(colors=255, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE)
+    pal.paste(255, mask=opaque_mask.point(lambda v: 255 - v))
+    return pal
 
 
 if __name__ == "__main__":
