@@ -4,8 +4,11 @@ Tools for Where Winds Meet (Messiah engine) asset packs. Format details: `README
 External reference for anything not covered there: https://github.com/ArArgon/yysls-re (docs/).
 
 ## Layout
-- `tools/wwm_textures.py` — texture/image extractor (the main deliverable)
-- `tools/wwm_decode_text.py` — HEX_/HEXB_/shift-1 text decoder
+- `tools/wwm_textures.py` — texture/image extractor; also home of `Pack`, `Entry`, `collect_entries`, `ezst_decode`
+- `tools/wwm_decode_text.py` — HEX_/HEXB_/shift-1/CLv2/LocalDB text decoder
+- `tools/wwm_harvest_paths.py` — path harvest + `file_id()` hash; `load_tool()` imports siblings once (pickling needs this)
+- `tools/wwm_csb.py`, `tools/wwm_ui_map.py`, `tools/wwm_atlas.py` — Cocos UI: csb decode, UI map, atlas frame cutting
+- `tools/wwm_lua.py` — LuaText → stock Lua 5.4 bytecode (+ unluac)
 - `mpk/` — Rust: v3 `.mpkinfo` parser (`v3_parser.rs`), legacy v1 reader
 - `texture/` — Rust: `EPixelFormat` enum; texture decoding not ported yet
 - `resources/` — Rust: legacy Diablo Immortal `.repository` code, untouched

@@ -1,0 +1,164 @@
+#!/usr/bin/env python3
+"""
+Cut sprite frames out of a Cocos .plist atlas stored in the packs, and optionally build
+animated GIFs from numbered frame sequences (e.g. ui_emotion_12_00000 .. 00004).
+
+Usage:
+  wwm_atlas.py <install_root> --plist UIScript/plist/foo.plist -o OUT [--gif] [--fps 10]
+  wwm_atlas.py <install_root> --list PATTERN --paths paths.txt   # find plists by name
+
+The plist's textureFileName is resolved by hashing candidate paths next to the plist.
+The texture is a game texture container (see wwm_textures.py); frames are cut using the
+plist rects (rotated frames are un-rotated) and written as <frame>.png.
+"""
+
+from __future__ import annotations
+
+import argparse
+import importlib.util
+import io
+import plistlib
+import re
+import sys
+from collections import defaultdict
+from pathlib import Path
+
+from PIL import Image
+
+_here = Path(__file__).resolve().parent
+
+
+def _load(name):
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(name, _here / f"{name}.py")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+wt = _load("wwm_textures")
+hp = _load("wwm_harvest_paths")
+
+SEQ_RE = re.compile(r"^(.*?)[_-]?(\d{2,6})\.png$")
+
+
+def parse_rect(s: str) -> tuple[int, int, int, int]:
+    x, y, w, h = (int(float(v)) for v in re.findall(r"-?[\d.]+", s))
+    return x, y, w, h
+
+
+def read_entry(by_id: dict, path: str) -> tuple[bytes, str] | None:
+    e = by_id.get(hp.file_id(path))
+    if e is None:
+        return None
+    pack = wt.Pack(e.container)
+    buf = pack.read(e.offset, e.size)
+    if buf[:4] in (b"EZST", b"ZSTD"):
+        buf = wt.ezst_decode(buf)
+    return buf, path
+
+
+def texture_image(buf: bytes) -> Image.Image:
+    if buf[:4] == wt.TEX_MAGIC:
+        tex = wt.parse_texture(buf)
+        top = max((m for m in tex.mips if m.data), key=lambda m: m.w * m.h)
+        png = wt.to_png(tex.fmt, top.w, top.h, top.data)
+        if png is None:
+            raise ValueError(f"cannot decode texture format {tex.fmt}")
+        return Image.open(io.BytesIO(png)).convert("RGBA")
+    return Image.open(io.BytesIO(buf)).convert("RGBA")
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("install_root")
+    ap.add_argument("--plist", help="plist path inside the VFS, e.g. UIScript/plist/x.plist")
+    ap.add_argument("--list", metavar="REGEX", help="list harvested plist paths matching REGEX and exit")
+    ap.add_argument("--paths", help="harvested paths file (for --list)")
+    ap.add_argument("-o", "--output")
+    ap.add_argument("--gif", action="store_true", help="also build one GIF per numbered frame sequence")
+    ap.add_argument("--fps", type=float, default=10.0)
+    args = ap.parse_args()
+
+    if args.list:
+        rx = re.compile(args.list, re.I)
+        for line in open(args.paths):
+            p = line.strip()
+            if p.lower().endswith(".plist") and rx.search(p):
+                print(p)
+        return
+    if not (args.plist and args.output):
+        ap.error("--plist and -o are required")
+
+    root = Path(args.install_root)
+    entries = wt.collect_entries(root, {"res", "lt", "cache", "db"})
+    by_id = {}
+    for e in entries:
+        by_id.setdefault(e.file_id, e)
+
+    got = read_entry(by_id, args.plist)
+    if got is None:
+        sys.exit(f"plist not found in indexes: {args.plist}")
+    pl = plistlib.loads(got[0])
+    meta = pl.get("metadata") or {}
+    tex_name = meta.get("textureFileName") or meta.get("realTextureFileName")
+    frames = pl.get("frames") or {}
+    print(f"{args.plist}: {len(frames)} frames, texture {tex_name}, format {meta.get('format')}")
+
+    plist_dir = args.plist.rsplit("/", 1)[0] + "/" if "/" in args.plist else ""
+    candidates = [plist_dir + tex_name, tex_name, "UIScript/" + tex_name, "UI/" + tex_name,
+                  plist_dir.replace("plist/", "") + tex_name]
+    tex = next((r for r in (read_entry(by_id, c) for c in candidates) if r), None)
+    if tex is None:
+        sys.exit(f"texture not found, tried: {candidates}")
+    print(f"texture resolved as {tex[1]}")
+    atlas = texture_image(tex[0])
+    print(f"atlas image {atlas.size}")
+
+    out = Path(args.output)
+    out.mkdir(parents=True, exist_ok=True)
+    atlas.save(out / Path(tex_name).name)
+    seqs: dict[str, list[tuple[int, Image.Image]]] = defaultdict(list)
+    for name, fr in frames.items():
+        x, y, w, h = parse_rect(fr.get("frame") or fr.get("textureRect"))
+        rotated = bool(fr.get("rotated") or fr.get("textureRotated"))
+        box = (x, y, x + h, y + w) if rotated else (x, y, x + w, y + h)
+        im = atlas.crop(box)
+        if rotated:
+            im = im.rotate(90, expand=True)
+        # place the trimmed frame back into its original source size
+        src = fr.get("sourceSize") or fr.get("spriteSourceSize")
+        off = fr.get("offset") or fr.get("spriteOffset")
+        if src and off:
+            sw, sh = (int(float(v)) for v in re.findall(r"-?[\d.]+", src))
+            ox, oy = (float(v) for v in re.findall(r"-?[\d.]+", off))
+            canvas = Image.new("RGBA", (sw, sh))
+            px = int(round((sw - w) / 2 + ox))
+            py = int(round((sh - h) / 2 - oy))
+            canvas.paste(im, (px, py))
+            im = canvas
+        im.save(out / name)
+        m = SEQ_RE.match(name)
+        if m:
+            seqs[m.group(1)].append((int(m.group(2)), im))
+    print(f"wrote {len(frames)} frames to {out}")
+
+    if args.gif:
+        gif_dir = out / "gif"
+        gif_dir.mkdir(exist_ok=True)
+        n = 0
+        for base, items in seqs.items():
+            items.sort()
+            ims = [im for _, im in items]
+            if len(ims) < 2:
+                continue
+            ims[0].save(gif_dir / f"{base}.gif", save_all=True, append_images=ims[1:],
+                        duration=int(1000 / args.fps), loop=0, disposal=2)
+            n += 1
+        print(f"wrote {n} GIFs to {gif_dir}")
+
+
+if __name__ == "__main__":
+    main()

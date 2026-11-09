@@ -86,9 +86,27 @@ with the same NetEase key, no base64/zlib (chat history, UI/red-dot state, cache
 `Package/Other/{enc_c,enc_g,dev_i}.bin`: `HEX_` around plain text / JSON (CPU/GPU block and tier lists).
 `tools/wwm_decode_text.py` handles all of these by sniffing content.
 
+### UI layer (Cocos2d-x)
+UI is Cocos Studio: `UIScript/*.csb` widget trees (FlatBuffers, stock `CSParseBinary` schema plus a
+`ProjectNodeOptions` override vector and a `Splendor` shader-effect node), `UIScript/plist/*.plist`
+sprite atlases, `SpineNode` for Spine animations. Asset paths inside csb/Lua payloads are cleartext,
+so hashing them (MurmurHash3-32 + tail signature, see yysls-re `file-id.md`) names index entries.
+Atlas textures themselves are not addressed by readable paths (GUID keys, mapping unresolved).
+
+### Lua
+Scripts are `LuaText` blobs: `u32 decoded_size` + raw LZ4 block → stock Lua 5.4 chunk whose opcode
+table has 17 inserted opcodes (table from yysls-re). `tools/wwm_lua.py` unpacks, remaps to stock
+numbering and writes `.luac` named from the chunk's `source` field (`hexm/...`, `Sunshine/...`);
+pass `--unluac unluac.jar` to decompile to `.lua`.
+
 ## Layout
 - `tools/wwm_textures.py` — texture/image extractor (Python)
-- `tools/wwm_decode_text.py` — decoder for `HEX_`/`HEXB_` wrappers and shifted logs
+- `tools/wwm_decode_text.py` — decoder for `HEX_`/`HEXB_` wrappers, SQLite LocalDB, CLv2 logs
+- `tools/wwm_harvest_paths.py` — harvest cleartext asset paths from payloads, hash them to file ids, capture csb
+- `tools/wwm_csb.py` — Cocos csb decoder (`cocos_csb_schema.json` generated from cocos2d-x headers)
+- `tools/wwm_ui_map.py` — UI asset map: csb trees, texts, timelines, atlases, recovered names
+- `tools/wwm_atlas.py` — cut plist atlas frames, build GIFs from frame sequences
+- `tools/wwm_lua.py` — Lua bytecode dump (LuaText → stock 5.4 → optional unluac)
 - `mpk/` — Rust: v1 reader (Diablo Immortal era) and v3 `.mpkinfo` parser
 - `texture/` — Rust: Messiah `EPixelFormat` enum (texture decoding not yet ported)
 - `resources/` — Rust: v1 `.repository` handling (Diablo Immortal)
