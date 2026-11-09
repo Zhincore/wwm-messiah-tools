@@ -248,7 +248,9 @@ def decompile_all(out_dir: Path, jar: str, jobs: int) -> Counter:
         target = f.with_suffix(".lua")
         if target.exists():
             return "skipped"
-        res = subprocess.run(["java", "-jar", jar, str(f)], capture_output=True, text=True, errors="replace")
+        # -Dunluac.tfor54slots=5: Messiah's generic for reserves 5 internal registers (patched unluac)
+        res = subprocess.run(["java", "-Dunluac.tfor54slots=5", "-jar", jar, str(f)],
+                             capture_output=True, text=True, errors="replace")
         if res.returncode == 0 and res.stdout.strip():
             target.write_text(res.stdout, encoding="utf-8")
             return "decompiled"
