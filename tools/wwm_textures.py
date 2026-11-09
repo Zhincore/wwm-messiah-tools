@@ -229,7 +229,7 @@ class Pack:
         self.fd = self.fh.fileno()
         self.size = os.fstat(self.fd).st_size
         self.blocks: list[Block] | None = None
-        if self.read(0, 4) == b"EZST" and not self._index_is_physical(entries):
+        if self.read(0, 4) == b"EZST" and self.size <= self.MAX_WALK and not self._index_is_physical(entries):
             self.blocks = self._walk_blocks()
 
     KNOWN_HEADS = (b"EZST", b"ZSTD", TEX_MAGIC, b"RIFF", b"BKHD", b"ZZZ4", b"LZMA", b".MES", b"<?xm", b"CCCC")
@@ -237,18 +237,35 @@ class Pack:
     def _index_is_physical(self, entries: list[Entry] | None) -> bool:
         """
         True when index offsets address this file directly: every entry lies inside the
-        file and nearly all sampled entries start with a known payload magic.
+        file, entries tile it (mostly zero gaps) or start with known magics, and sampled
+        EZST entries really decode at their offsets (a compacted lite pack fails this).
         """
         if not entries:
             return False
         if max(e.offset + e.size for e in entries) > self.size:
             return False
-        step = max(1, len(entries) // 200)
-        sample = entries[::step]
-        hits = sum(1 for e in sample if self.read(e.offset, 4) in self.KNOWN_HEADS)
-        return hits >= 0.9 * len(sample)
+        ordered = sorted(entries, key=lambda e: e.offset)
+        zero_gaps = sum(1 for a, b in zip(ordered, ordered[1:]) if b.offset == a.offset + a.size)
+        step = max(1, len(ordered) // 200)
+        sample = ordered[::step]
+        heads = [(e, self.read(e.offset, 4)) for e in sample]
+        known = sum(1 for _, h in heads if h in self.KNOWN_HEADS)
+        if zero_gaps < 0.5 * max(1, len(ordered) - 1) and known < 0.9 * len(sample):
+            return False
+        ezst = [e for e, h in heads if h == b"EZST"][:10]
+        if ezst:
+            ok = 0
+            for e in ezst:
+                try:
+                    ezst_decode(self.read(e.offset, min(e.size, self.MAX_BLOCK)))
+                    ok += 1
+                except Exception:
+                    pass
+            return ok >= 0.8 * len(ezst)
+        return True
 
     MAX_BLOCK = 64 << 20
+    MAX_WALK = 256 << 20  # block packs are small; never walk a big physical pack
 
     def _walk_blocks(self) -> list[Block] | None:
         """
@@ -286,7 +303,7 @@ class Pack:
                 pos = end
         finally:
             mm.close()
-        if not blocks or covered < len(data) // 2:
+        if not blocks or covered < self.size // 2:
             return None
         return blocks
 
