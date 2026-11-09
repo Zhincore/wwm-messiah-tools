@@ -78,6 +78,7 @@ def main() -> None:
     ap.add_argument("--list", metavar="REGEX", help="list harvested plist paths matching REGEX and exit")
     ap.add_argument("--paths", help="harvested paths file (for --list)")
     ap.add_argument("-o", "--output")
+    ap.add_argument("--texture-id", help="file id (hex) of the atlas texture when it cannot be resolved by name")
     ap.add_argument("--gif", action="store_true", help="also build one GIF per numbered frame sequence")
     ap.add_argument("--fps", type=float, default=10.0)
     args = ap.parse_args()
@@ -111,8 +112,14 @@ def main() -> None:
     candidates = [plist_dir + tex_name, tex_name, "UIScript/" + tex_name, "UI/" + tex_name,
                   plist_dir.replace("plist/", "") + tex_name]
     tex = next((r for r in (read_entry(by_id, c) for c in candidates) if r), None)
+    if tex is None and args.texture_id:
+        e = by_id.get(int(args.texture_id, 16))
+        if e:
+            pack = wt.Pack(e.container)
+            buf = pack.read(e.offset, e.size)
+            tex = (wt.ezst_decode(buf) if buf[:4] in (b"EZST", b"ZSTD") else buf, f"id:{args.texture_id}")
     if tex is None:
-        sys.exit(f"texture not found, tried: {candidates}")
+        sys.exit(f"texture not found, tried: {candidates}; pass --texture-id (textures are GUID-keyed)")
     print(f"texture resolved as {tex[1]}")
     atlas = texture_image(tex[0])
     print(f"atlas image {atlas.size}")
