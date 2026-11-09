@@ -125,14 +125,14 @@ def looks_like_csb(buf: bytes) -> bool:
         return False
 
 
-def harvest_pack(args: tuple[str, list, int, str | None]) -> tuple[set[bytes], int]:
+def harvest_pack(args: tuple[str, list, int, str | None]) -> tuple[str, set[bytes], int]:
     container, entries, max_size, save_dir = args
     found: set[bytes] = set()
     saved = 0
     try:
         pack = wt.Pack(container, entries)
     except OSError:
-        return found, saved
+        return container, found, saved
     if pack.blocks is not None:
         def blocks():
             for b in pack.blocks:
@@ -165,7 +165,7 @@ def harvest_pack(args: tuple[str, list, int, str | None]) -> tuple[set[bytes], i
             s = m.group(0)
             if s.rsplit(b".", 1)[-1].lower() in EXTS:
                 found.add(s.strip())
-    return found, saved
+    return container, found, saved
 
 
 def cmd_harvest(args: argparse.Namespace) -> None:
@@ -176,20 +176,32 @@ def cmd_harvest(args: argparse.Namespace) -> None:
         by_container[e.container].append(e)
     if args.save_csb:
         Path(args.save_csb).mkdir(parents=True, exist_ok=True)
-    jobs = [(c, es, args.max_size, args.save_csb) for c, es in sorted(by_container.items())]
-    print(f"{len(entries)} entries in {len(jobs)} containers", flush=True)
+    done_path = Path(args.output + ".done")
+    done = set(done_path.read_text().split()) if args.resume and done_path.exists() else set()
+    jobs = [(c, es, args.max_size, args.save_csb) for c, es in sorted(by_container.items())
+            if Path(c).name not in done]
+    print(f"{len(entries)} entries in {len(by_container)} containers, {len(jobs)} to do", flush=True)
     found: set[bytes] = set()
+    if args.resume and Path(args.output).exists():
+        found = {l.rstrip(b"\n") for l in open(args.output, "rb") if l.strip()}
     saved = 0
+    # Paths are appended per pack and the pack recorded as done, so a killed run resumes.
+    out = open(args.output, "ab" if args.resume else "wb")
+    done_file = open(done_path, "a" if args.resume else "w")
     # spawn: workers must not inherit the parent's full index (copy-on-write blow-up)
     with mp.get_context("spawn").Pool(args.jobs, maxtasksperchild=8) as pool:
-        for i, (s, n) in enumerate(pool.imap_unordered(harvest_pack, jobs), 1):
-            found |= s
+        for i, (container, s, n) in enumerate(pool.imap_unordered(harvest_pack, jobs), 1):
+            new = s - found
+            found |= new
             saved += n
+            out.write(b"".join(p + b"\n" for p in sorted(new)))
+            out.flush()
+            done_file.write(Path(container).name + "\n")
+            done_file.flush()
             if i % 20 == 0 or i == len(jobs):
                 print(f"[{i}/{len(jobs)}] {len(found)} unique paths, {saved} csb saved", flush=True)
-    with open(args.output, "wb") as f:
-        for s in sorted(found):
-            f.write(s + b"\n")
+    out.close()
+    done_file.close()
     print(f"wrote {len(found)} paths to {args.output}")
 
 
@@ -221,6 +233,7 @@ def main() -> None:
     ap.add_argument("-j", "--jobs", type=int, default=max(1, (os.cpu_count() or 4) - 2))
     ap.add_argument("--max-size", type=int, default=512_000, help="skip payloads larger than this")
     ap.add_argument("--save-csb", metavar="DIR", help="also save every Cocos .csb payload here as <file_id>.csb")
+    ap.add_argument("--resume", action="store_true", help="skip packs listed in <output>.done and append")
     ap.add_argument("--match", metavar="PATHS", help="match harvested paths against a manifest instead")
     ap.add_argument("--manifest")
     args = ap.parse_args()

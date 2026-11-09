@@ -226,10 +226,10 @@ class Pack:
     def __init__(self, path: str, entries: list[Entry] | None = None):
         self.path = path
         self.fh = open(path, "rb")
-        self.size = os.fstat(self.fh.fileno()).st_size
-        self.mm = mmap.mmap(self.fh.fileno(), 0, access=mmap.ACCESS_READ) if self.size else b""
+        self.fd = self.fh.fileno()
+        self.size = os.fstat(self.fd).st_size
         self.blocks: list[Block] | None = None
-        if self.mm[:4] == b"EZST" and not self._index_is_physical(entries):
+        if self.read(0, 4) == b"EZST" and not self._index_is_physical(entries):
             self.blocks = self._walk_blocks()
 
     KNOWN_HEADS = (b"EZST", b"ZSTD", TEX_MAGIC, b"RIFF", b"BKHD", b"ZZZ4", b"LZMA", b".MES", b"<?xm", b"CCCC")
@@ -245,8 +245,10 @@ class Pack:
             return False
         step = max(1, len(entries) // 200)
         sample = entries[::step]
-        hits = sum(1 for e in sample if self.mm[e.offset : e.offset + 4] in self.KNOWN_HEADS)
+        hits = sum(1 for e in sample if self.read(e.offset, 4) in self.KNOWN_HEADS)
         return hits >= 0.9 * len(sample)
+
+    MAX_BLOCK = 64 << 20
 
     def _walk_blocks(self) -> list[Block] | None:
         """
@@ -254,39 +256,45 @@ class Pack:
         candidate block end is accepted only if the block decodes; a start that never
         decodes is a false positive and the walk resyncs. Packs may end with a tail.
         """
-        data = self.mm
-        blocks: list[Block] = []
-        pos = 0
-        covered = 0
-        while pos != -1 and pos < len(data):
-            if data[pos : pos + 4] != b"EZST":
-                break
-            nxt = data.find(b"EZST", pos + 4)
-            decoded = None
-            while True:
-                end = len(data) if nxt == -1 else nxt
-                try:
-                    decoded = ezst_decode(data[pos:end])
+        mm = mmap.mmap(self.fd, 0, access=mmap.ACCESS_READ)
+        try:
+            data = mm
+            blocks: list[Block] = []
+            pos = 0
+            covered = 0
+            while pos != -1 and pos < len(data):
+                if data[pos : pos + 4] != b"EZST":
                     break
-                except Exception:
-                    if nxt == -1:
+                nxt = data.find(b"EZST", pos + 4)
+                decoded = None
+                while True:
+                    end = len(data) if nxt == -1 else nxt
+                    if end - pos > self.MAX_BLOCK:
                         break
-                    nxt = data.find(b"EZST", nxt + 1)
-            if decoded is None:
-                pos = data.find(b"EZST", pos + 1)
-                continue
-            blocks.append(Block(pos, end - pos, len(decoded)))
-            covered += end - pos
-            pos = end
+                    try:
+                        decoded = ezst_decode(bytes(data[pos:end]))
+                        break
+                    except Exception:
+                        if nxt == -1:
+                            break
+                        nxt = data.find(b"EZST", nxt + 1)
+                if decoded is None:
+                    pos = data.find(b"EZST", pos + 1)
+                    continue
+                blocks.append(Block(pos, end - pos, len(decoded)))
+                covered += end - pos
+                pos = end
+        finally:
+            mm.close()
         if not blocks or covered < len(data) // 2:
             return None
         return blocks
 
     def read(self, off: int, size: int) -> bytes:
-        return bytes(self.mm[off : off + size])
+        return os.pread(self.fd, size, off)
 
     def block_data(self, block: Block) -> bytes:
-        return ezst_decode(self.mm[block.phys_off : block.phys_off + block.phys_size])
+        return ezst_decode(self.read(block.phys_off, block.phys_size))
 
     def match_blocks(self, entries: list[Entry]) -> list[tuple[Block, Entry | None]]:
         """Greedily align physical blocks with offset-ordered index entries by size."""
