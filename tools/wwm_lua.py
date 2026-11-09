@@ -103,9 +103,12 @@ def remap(instr: int) -> tuple[int, bool]:
         return instr, False
     out = (instr & ~0x7F) | CUSTOM[op][1]
     if op in MMBIN_OPS:
+        # C holds a TMS (metamethod) index, not an opcode. The game's TMS enum has one
+        # extra entry before TM_ADD, so every arithmetic metamethod is shifted by +1
+        # (observed: ADD=7, SUB=8, MUL=9, DIV=12 vs stock 6, 7, 8, 11).
         c = (out >> 24) & 0xFF
-        if c < len(CUSTOM) and CUSTOM[c][1] is not None:
-            out = (out & 0x00FFFFFF) | (CUSTOM[c][1] << 24)
+        if c >= 7:
+            out = (out & 0x00FFFFFF) | ((c - 1) << 24)
     return out, True
 
 
