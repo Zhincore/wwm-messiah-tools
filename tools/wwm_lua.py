@@ -245,33 +245,46 @@ def decompile_all(out_dir: Path, jar: str, jobs: int) -> Counter:
     stats = Counter()
 
     def run(f: Path):
+        target = f.with_suffix(".lua")
+        if target.exists():
+            return "skipped"
         res = subprocess.run(["java", "-jar", jar, str(f)], capture_output=True, text=True, errors="replace")
         if res.returncode == 0 and res.stdout.strip():
-            f.with_suffix(".lua").write_text(res.stdout, encoding="utf-8")
-            return True
+            target.write_text(res.stdout, encoding="utf-8")
+            return "decompiled"
         f.with_suffix(".unluac.err").write_text(res.stderr[-2000:], encoding="utf-8")
-        return False
+        return "decompile_failed"
 
     from concurrent.futures import ThreadPoolExecutor
 
     with ThreadPoolExecutor(jobs) as ex:
-        for ok in ex.map(run, files):
-            stats["decompiled" if ok else "decompile_failed"] += 1
+        for i, outcome in enumerate(ex.map(run, files), 1):
+            stats[outcome] += 1
+            if i % 2000 == 0:
+                print(f"[{i}/{len(files)}] {dict(stats)}", flush=True)
     return stats
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("install_root")
+    ap.add_argument("install_root", nargs="?", default=".")
     ap.add_argument("-o", "--output", required=True)
     ap.add_argument("--paths", help="harvested path list for naming (wwm_harvest_paths.py)")
     ap.add_argument("--unluac", metavar="JAR", help="decompile with unluac after extraction")
     ap.add_argument("-j", "--jobs", type=int, default=3)
     ap.add_argument("--limit", type=int, default=0, help="max scripts per container (smoke test)")
     ap.add_argument("--container", metavar="REGEX")
+    ap.add_argument("--decompile-only", action="store_true", help="skip extraction; decompile .luac already in -o")
     args = ap.parse_args()
     out_dir = Path(args.output)
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.decompile_only:
+        if not args.unluac:
+            ap.error("--decompile-only needs --unluac JAR")
+        print("decompiling existing .luac files...", flush=True)
+        print("done:", dict(decompile_all(out_dir, args.unluac, args.jobs)))
+        return
 
     root = Path(args.install_root)
     entries = wt.collect_entries(root, {"res", "lt", "cache", "db"})
