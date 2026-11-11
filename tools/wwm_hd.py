@@ -17,9 +17,10 @@ Layout:
   shard      index block holding a swiss-table hash map: u64 capacity, u64 n, u64 seed,
              capacity control bytes (< 0x80 = used) + 16 mirror bytes, 8-aligned, then capacity slots:
                u64 key, u16 data_file, u16 block, u16 offset/8, u16 length/8   (length 0 = row deleted)
-             Patch shards override base shards key by key.
+             Patch shards override base shards key by key. Keys repeat across shards and, in grouped
+             tables, within one. The manifest row count can differ slightly for patched tables.
   row        u16 cell_count + cells: u8 field id, u8 type, value. type = (TLV tag << 2) | f,
-             f = 1 adds 256 to the field id; the value is the TLV body without its tag byte
+             f = bits 8-9 of the field id; the value is the TLV body without its tag byte
   TLV value  u8 tag: 0x01-0x04 u8/u16/u32/u64, 0x05 f32, 0x06 f64, 0x08 str (u16 len),
              0x09 list / 0x0a dict (u16 item count, items are TLVs; a dict alternates key, value),
              0x0b null, 0x0c false, 0x0d true
@@ -173,19 +174,17 @@ class Store:
         return [struct.unpack_from("<QHHHH", buf, base + 16 * i) for i in range(cap) if buf[24 + i] < 0x80]
 
     def locations(self, t: Table) -> list[tuple[int, int, int, int, int, bool]]:
-        """(key, data_file, block, offset8, length8, from_patch) per live row. Keys repeat across shards."""
+        """
+        (key, data_file, block, offset8, length8, from_patch) per live row. Keys are not unique:
+        they repeat across shards, and grouped tables store several rows under one key.
+        """
         out = []
         for base, patch in self.manifest.shards[t.first_shard : t.first_shard + t.shard_count]:
-            rows: dict[int, tuple[int, int, int, int, bool]] = {}
-            for ptr, patched in ((base, False), (patch, True)):
-                if ptr == NONE:
-                    continue
-                for key, f, b, off, ln in self.shard(ptr):
-                    if ln:
-                        rows[key] = (f, b, off, ln, patched)
-                    else:
-                        rows.pop(key, None)
-            out.extend((key, *v) for key, v in rows.items())
+            patch_slots = self.shard(patch) if patch != NONE else []
+            replaced = {slot[0] for slot in patch_slots}
+            if base != NONE:
+                out.extend((*slot, False) for slot in self.shard(base) if slot[0] not in replaced)
+            out.extend((*slot, True) for slot in patch_slots if slot[4])
         return out
 
     def table(self, name: str) -> dict:
@@ -296,12 +295,10 @@ def tlv(buf: bytes, pos: int):
 
 
 def cell(buf: bytes, pos: int):
-    """One row cell: u8 field id, u8 type, value. type = (TLV tag << 2) | bit 0 = field id + 256."""
+    """One row cell: u8 field id, u8 type, value. type = (TLV tag << 2) | bits 8-9 of the field id."""
     fid, t = buf[pos], buf[pos + 1]
-    if t & 2:
-        raise PayloadError(f"unknown cell type {t:#x} at {pos}")
     value, pos = tlv_body(t >> 2, buf, pos + 2)
-    return fid | ((t & 1) << 8), value, pos
+    return fid | ((t & 3) << 8), value, pos
 
 
 def decode_value(seg: bytes, fields: list[str], bare: bool):

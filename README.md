@@ -110,10 +110,11 @@ registers, `NEWTABLE` variants have no `EXTRAARG`. `tools/unluac-messiah.patch` 
 - Schema block: field-name list; a cell's field id is its position.
 - Shard block: swiss-table hash map `row key → (data file, block, offset/8, length/8)`; patch shards
   (files 1001, 1200) override base shards per key, length 0 deletes the row.
-- Row: `u16 cell_count` + cells `(u8 field, u8 type, value)`, `type = (TLV tag << 2) | bit 0` (bit 0 adds 256
-  to the field id), value = TLV body; schemaless tables (kind bit 0) store a bare TLV value.
+- Row: `u16 cell_count` + cells `(u8 field, u8 type, value)`, `type = (TLV tag << 2) | f` (`f` = bits 8-9 of
+  the field id), value = TLV body; schemaless tables (kind bit 0) store a bare TLV value.
 - TLV tags: `01-04` u8/u16/u32/u64, `05` f32, `06` f64, `08` string, `09` list, `0a` dict, `0b` null,
-  `0c` false, `0d` true. Row keys are unique per shard only.
+  `0c` false, `0d` true. Row keys are not unique (repeat across shards and inside grouped tables); the manifest row
+  count can differ slightly for patched tables.
 - Text columns hold 64-bit text ids; `locale/translate_words_map_<lang>[_diff]` maps them to strings
   (shard = `1 + id % (blocks - 1)`), `--locale en` resolves them.
 
