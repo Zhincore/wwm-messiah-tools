@@ -139,9 +139,10 @@ See `docs/chat-markup.md` (tag grammar, components, colour codes, emotes).
 - `tools/wwm_texture_index.py` — header-only texture census
 - `tools/wwm_patch_override.py` — experimental: replace one VFS file, either through a `Patch.mpkdb` entry or
   `--in-place` in its pack; EZST/ZSTD entries are re-compressed (in place: to the exact stored size),
-  everything is journalled and `--revert` restores it. Confirmed in game (lite install, in place): a raw
-  MP4 (login video) and an EZST animation padded with empty zstd blocks. The `Patch.mpkdb` route is
-  loaded by the patcher but unconfirmed in the engine.
+  everything is journalled and `--revert` restores it. Confirmed in game (lite install): in place, a raw
+  MP4 (login video) and an EZST animation padded with empty zstd blocks; through `Patch.mpkdb`, an EZST
+  animation whose existing row was repointed. Files the patcher opens before it registers patch entries
+  (the login video) only respond to the in-place route.
 - `docs/chat-markup.md` — rich-text markup reference
 - `mpk/` — Rust: v1 reader (Diablo Immortal era) and v3 `.mpkinfo` parser
 - `texture/` — Rust: EZST codec, texture container parser, PNG/DDS conversion
