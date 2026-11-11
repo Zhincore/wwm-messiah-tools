@@ -10,7 +10,7 @@ packs. The v1 code paths are kept for reference; everything WWM-specific is new.
 ## Quick start
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install pillow pycryptodome zstandard msgpack lz4
+python3 -m venv .venv && .venv/bin/pip install pillow pycryptodome zstandard msgpack lz4 mmh3
 .venv/bin/python tools/wwm_textures.py scan    /path/to/wwm
 .venv/bin/python tools/wwm_textures.py extract /path/to/wwm -o /big/disk/wwm_textures -j 8
 # interrupted? continue where it stopped:
@@ -137,6 +137,7 @@ See `docs/chat-markup.md` (tag grammar, components, colour codes, emotes).
 - `tools/wwm_lua.py` — Lua bytecode dump (LuaText → stock 5.4 → optional unluac); `tools/unluac-messiah.patch`
 - `tools/wwm_hd.py` — HD store data tables (MANIFEST/index/data) + locale text
 - `tools/wwm_texture_index.py` — header-only texture census
+- `tools/wwm_patch_override.py` — experimental: override a VFS file through a `Patch.mpkdb` entry (journalled, `--revert`)
 - `docs/chat-markup.md` — rich-text markup reference
 - `mpk/` — Rust: v1 reader (Diablo Immortal era) and v3 `.mpkinfo` parser
 - `texture/` — Rust: EZST codec, texture container parser, PNG/DDS conversion

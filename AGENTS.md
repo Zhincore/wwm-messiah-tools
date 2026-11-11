@@ -10,12 +10,13 @@ External reference for anything not covered there: https://github.com/ArArgon/yy
 - `tools/wwm_csb.py`, `tools/wwm_ui_map.py`, `tools/wwm_atlas.py` — Cocos UI: csb decode, UI map, atlas frame cutting
 - `tools/wwm_lua.py` — LuaText → stock Lua 5.4 bytecode (+ unluac; needs `tools/unluac-messiah.patch`)
 - `tools/wwm_hd.py` — HD store data tables: `Store.table(name)`, `Locale` text ids; `--list/--table/--dump`
+- `tools/wwm_patch_override.py` — writes to the install (patch pack + `Patch.mpkdb` row); only run when the user asks, game closed
 - `mpk/` — Rust: v3 `.mpkinfo` parser (`v3_parser.rs`), legacy v1 reader
 - `texture/` — Rust: `ezst`, `container`, `convert` (PNG via texture2ddecoder, DDS DX10); CLI converts payload files
 - `resources/` — Rust: legacy Diablo Immortal `.repository` code, untouched
 
 ## Rules
-- Python deps: `pillow pycryptodome zstandard msgpack` in a venv; `cargo build` for Rust.
+- Python deps: `pillow pycryptodome zstandard msgpack lz4 mmh3` in a venv; `cargo build` for Rust.
 - Never stat/open per index entry on the game drive: 1.5M entries, slow mount. Resolve containers once per pack.
 - Never hardcode pack numbers, file ids or offsets. Resolve through indexes; packs change per build.
 - Block packs (start with `EZST`): index offsets are invalid in lite installs, walk blocks. Detection is
