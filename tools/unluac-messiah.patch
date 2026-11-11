@@ -1,0 +1,54 @@
+diff --git a/src/unluac/decompile/ControlFlowHandler.java b/src/unluac/decompile/ControlFlowHandler.java
+index 4a1e09a..8ee51bb 100644
+--- a/src/unluac/decompile/ControlFlowHandler.java
++++ b/src/unluac/decompile/ControlFlowHandler.java
+@@ -581,7 +581,7 @@ public class ControlFlowHandler {
+           
+           boolean forvarClose = false;
+           int close = target - 1;
+-          if(close >= line + 1 && is_close(state, close) && get_close_value(state, close) == A + 4) {
++          if(close >= line + 1 && is_close(state, close) && get_close_value(state, close) == A + TForBlock.TFOR54_SLOTS) {
+             forvarClose = true;
+             close--;
+           }
+diff --git a/src/unluac/decompile/Decompiler.java b/src/unluac/decompile/Decompiler.java
+index ef6e1f9..8437a6a 100644
+--- a/src/unluac/decompile/Decompiler.java
++++ b/src/unluac/decompile/Decompiler.java
+@@ -444,9 +444,10 @@ public class Decompiler {
+         operations.add(new RegisterSet(line, A, new TableLiteral(fb2int(B), fb2int(C))));
+         break;
+       case NEWTABLE54: {
+-        if(code.op(line + 1) != Op.EXTRAARG) throw new IllegalStateException();
++        // NetEase (Messiah) NEWLIST/NEWDICT variants are emitted without the EXTRAARG word.
++        boolean hasExtraArg = line + 1 <= code.length && code.op(line + 1) == Op.EXTRAARG;
+         int arraySize = C;
+-        if(code.k(line)) {
++        if(code.k(line) && hasExtraArg) {
+           arraySize += code.Ax(line + 1) * (code.getExtractor().C.max() + 1);
+         }
+         operations.add(new RegisterSet(line, A, new TableLiteral(arraySize, B == 0 ? 0 : (1 << (B - 1)))));
+diff --git a/src/unluac/decompile/block/TForBlock.java b/src/unluac/decompile/block/TForBlock.java
+index 84333b2..4651b48 100644
+--- a/src/unluac/decompile/block/TForBlock.java
++++ b/src/unluac/decompile/block/TForBlock.java
+@@ -16,6 +16,10 @@ import unluac.parse.LFunction;
+ 
+ public class TForBlock extends ContainerBlock {
+ 
++  // Number of internal registers a Lua 5.4 generic for reserves before the loop variables.
++  // Stock Lua 5.4: 4 (iterator, state, control, closing). NetEase's Messiah VM: 5.
++  public static final int TFOR54_SLOTS = Integer.getInteger("unluac.tfor54slots", 4);
++
+   protected final int internalRegisterFirst;
+   protected final int internalRegisterLast;
+   
+@@ -94,7 +98,7 @@ public class TForBlock extends ContainerBlock {
+     return new TForBlock(
+       function, begin, end,
+       closeType, closeLine,
+-      register, register + 3, register + 4, register + 3 + length,
++      register, register + TFOR54_SLOTS - 1, register + TFOR54_SLOTS, register + TFOR54_SLOTS - 1 + length,
+       begin - 2, internalScopeEnd,
+       begin - 1, explicitScopeEnd,
+       innerScopeEnd

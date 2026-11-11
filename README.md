@@ -97,7 +97,32 @@ Atlas textures themselves are not addressed by readable paths (GUID keys, mappin
 Scripts are `LuaText` blobs: `u32 decoded_size` + raw LZ4 block → stock Lua 5.4 chunk whose opcode
 table has 17 inserted opcodes (table from yysls-re). `tools/wwm_lua.py` unpacks, remaps to stock
 numbering and writes `.luac` named from the chunk's `source` field (`hexm/...`, `Sunshine/...`);
-pass `--unluac unluac.jar` to decompile to `.lua`.
+pass `--unluac unluac.jar` to decompile to `.lua`. Differences from stock 5.4 that a decompiler must
+know: `MMBIN*` C operand is the metamethod index + 1 (not an opcode), generic `for` reserves 5 internal
+registers, `NEWTABLE` variants have no `EXTRAARG`. `tools/unluac-messiah.patch` applies these to unluac
+(viruscamp/unluac mirror, commit 9c59af4); build it and run with `-Dunluac.tfor54slots=5` (wwm_lua does).
+
+### Data tables (HD store)
+`Package/HD/<region>/`: `MANIFEST`, `index{n}`, `data{n}` hold ~114k named tables (`MTable`), read by
+`tools/wwm_hd.py`. All three are `0xDEADBEEF` containers of zstd blocks.
+- MANIFEST: table names + 32-byte records `rows, shard_count, schema_ptr, patch_schema_ptr, hash, 0,
+  first_shard, kind`, then a shard array of `(ptr, patch_ptr)`; `ptr = (block << 16) | index file number`.
+- Schema block: field-name list; a cell's field id is its position.
+- Shard block: swiss-table hash map `row key → (data file, block, offset/8, length/8)`; patch shards
+  (files 1001, 1200) override base shards per key, length 0 deletes the row.
+- Row: `u16 cell_count` + cells `(u8 field, u8 type, value)`; schemaless tables (kind bit 0) store a bare
+  TLV value.
+- Text columns hold 64-bit text ids; `locale/translate_words_map_<lang>[_diff]` maps them to strings
+  (shard = `1 + id % (blocks - 1)`), `--locale en` resolves them.
+
+```bash
+.venv/bin/python tools/wwm_hd.py <install>/Package/HD/oversea --list '^chat_'
+.venv/bin/python tools/wwm_hd.py <install>/Package/HD/oversea --table chat_emotion_frame_data --locale en
+.venv/bin/python tools/wwm_hd.py <install>/Package/HD/oversea --dump OUT --locale en   # ~1.5 GB JSON
+```
+
+### Rich text / chat markup
+See `docs/chat-markup.md` (tag grammar, components, colour codes, emotes).
 
 ## Layout
 - `tools/wwm_textures.py` — texture/image extractor (Python)
@@ -106,7 +131,10 @@ pass `--unluac unluac.jar` to decompile to `.lua`.
 - `tools/wwm_csb.py` — Cocos csb decoder (`cocos_csb_schema.json` generated from cocos2d-x headers)
 - `tools/wwm_ui_map.py` — UI asset map: csb trees, texts, timelines, atlases, recovered names
 - `tools/wwm_atlas.py` — cut plist atlas frames, build GIFs from frame sequences
-- `tools/wwm_lua.py` — Lua bytecode dump (LuaText → stock 5.4 → optional unluac)
+- `tools/wwm_lua.py` — Lua bytecode dump (LuaText → stock 5.4 → optional unluac); `tools/unluac-messiah.patch`
+- `tools/wwm_hd.py` — HD store data tables (MANIFEST/index/data) + locale text
+- `tools/wwm_texture_index.py` — header-only texture census
+- `docs/chat-markup.md` — rich-text markup reference
 - `mpk/` — Rust: v1 reader (Diablo Immortal era) and v3 `.mpkinfo` parser
 - `texture/` — Rust: Messiah `EPixelFormat` enum (texture decoding not yet ported)
 - `resources/` — Rust: v1 `.repository` handling (Diablo Immortal)

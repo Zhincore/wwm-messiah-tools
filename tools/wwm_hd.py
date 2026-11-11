@@ -1,113 +1,255 @@
 #!/usr/bin/env python3
 """
 Read the HD store (Package/HD/<region>/: MANIFEST, data{n}, index{n}) that holds the game's
-binary data tables ("MTableReader" tables such as chat_emotion_frame_data).
+binary data tables ("MTable" tables such as chat_emotion_frame_data).
 
-Format (from ArArgon/yysls-re docs/hd-store.md, verified here):
-  container  u32 magic 0xDEADBEEF, u32 version, u32 count, u32 reserved, u32 offsets[count]
-             (relative to data region), blocks: u32 a=(clen<<8)|4, u32 b=(dlen<<8), u8 flags, zstd frame
-  MANIFEST   same magic, zstd frame a few bytes in; payload: u16 v1, u16 v2, u32 unk0,
-             u32 count_pool2, count_table, count_pool3, count_pool1; pools of (u16 len + str, 8-aligned);
-             count_table records of 8 x u32: u0 = pool index, u2 = (block<<16)|data_file, u7 = pool kind
-  payload    TLV (0x0a obj / 0x09 arr / 0x08 str / 0x01..0x06 ints+floats / 0x0b-0x0d null,false,true)
-             or FTV (u8 field_id, u8 type, value)
+Layout:
+  container  u32 magic 0xDEADBEEF, u32 version, u32 count, u32 reserved, u32 end_offsets[count]
+             (relative to the data region); block = 9-byte header + zstd frame
+  MANIFEST   same magic + one zstd frame. Payload: u16 v1, u16 v2, u32 unk, u32 n_tables, u32 n_shards,
+             u32 n_extern, u32 n_other; three string pools (u16 len + bytes, 8-aligned): table names,
+             extern names, other names; n_tables records of 8 x u32:
+               rows, shard_count, schema_ptr, patch_schema_ptr, hash, 0, first_shard, kind
+             (kind bit 0 = no schema, rows are bare TLV values); n_shards x (u32 ptr, u32 patch_ptr);
+             then the index and data file name lists (u32 count, u16 len + bytes).
+             ptr = (block << 16) | file number of an index file, 0xFFFFFFFF = none.
+  schema     index block: u16 count, count x (u16 len + field name); a cell's field id is its position
+  shard      index block holding a swiss-table hash map: u64 capacity, u64 n, u64 seed,
+             capacity control bytes (< 0x80 = used) + 16 mirror bytes, 8-aligned, then capacity slots:
+               u64 key, u16 data_file, u16 block, u16 offset/8, u16 length/8   (length 0 = row deleted)
+             Patch shards override base shards key by key.
+  row        u16 cell_count + cells (u8 field id, u8 type, value), see `cell`
+  TLV value  0x0a dict / 0x09 list / 0x08 str / 0x01-0x06 numbers / 0x0b-0x0d null,false,true
+  locale     locale/translate_words_map_<lang>[_diff]: same container; block 0 = directory, text id lives in
+             block 1 + id % (blocks - 1), a hash map with slots u64 id, u32 offset, u32 length; the offset
+             is relative to the offset field itself. u64 cells holding text ids resolve through it.
 
 Usage:
-  wwm_hd.py <hd_dir> --list [REGEX]                 list manifest keys (+ record pointers)
-  wwm_hd.py <hd_dir> --key NAME [-o out.json]       decode the block(s) behind a key
-  wwm_hd.py <hd_dir> --block data5:123 [-o out]     decode one block directly
+  wwm_hd.py <hd_dir> --list [REGEX]                 list tables: name, rows, shards, kind
+  wwm_hd.py <hd_dir> --table NAME [-o out.json]     decode one table
+  wwm_hd.py <hd_dir> --dump DIR [--match REGEX]     decode every (matching) table into DIR
+  add --locale en (or zh_cn, ja, ...) to replace text ids with their strings
+  wwm_hd.py <hd_dir> --block data5:123 -o out.bin   write one raw decompressed block
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import mmap
 import re
 import struct
 import sys
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 
 import zstandard
 
 HD_MAGIC = 0xDEADBEEF
-NO_POINTER = 0xFFFFFFFF
+NONE = 0xFFFFFFFF
+ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
+BLOCK_CACHE = 64
+LOCALE_CACHE = 1024
 
 
 def zstd(data: bytes) -> bytes:
-    i = data.find(b"\x28\xb5\x2f\xfd")
+    i = data.find(ZSTD_MAGIC)
     if i < 0:
         raise ValueError("no zstd frame")
     return zstandard.ZstdDecompressor().decompressobj().decompress(data[i:])
 
 
-# ---------------------------------------------------------------- containers
-
-
-def container_blocks(path: Path) -> list[tuple[int, int]]:
-    data = path.read_bytes()
-    magic, version, count, _ = struct.unpack_from("<IIII", data, 0)
-    if magic != HD_MAGIC:
-        raise ValueError(f"{path}: bad magic")
-    offsets = struct.unpack_from(f"<{count}I", data, 16)
-    base = 16 + 4 * count
-    if offsets and offsets[-1] != len(data) - base:
-        raise ValueError(f"{path}: offset table does not end at EOF")
-    out, prev = [], 0
-    for end in offsets:
-        out.append((base + prev, base + end))
-        prev = end
-    return out
-
-
-def read_block(path: Path, index: int) -> bytes:
-    blocks = container_blocks(path)
-    start, end = blocks[index]
-    raw = path.read_bytes()[start:end]
-    a, b = struct.unpack_from("<II", raw, 0)
-    payload = zstd(raw[9:])
-    if (b >> 8) and len(payload) != (b >> 8):
-        raise ValueError(f"block {index}: decompressed {len(payload)} != declared {b >> 8}")
-    return payload
-
-
 # ---------------------------------------------------------------- manifest
+
+
+@dataclass(frozen=True, slots=True)
+class Table:
+    name: str
+    rows: int
+    shard_count: int
+    schema: int
+    patch_schema: int
+    first_shard: int
+    kind: int
 
 
 @dataclass
 class Manifest:
-    pools: list[list[str]]
-    records: list[tuple[int, ...]]
+    tables: dict[str, Table]
+    shards: list[tuple[int, int]]
+    extern: list[str]
+    other: list[str]
 
-    def find(self, key: str) -> list[tuple[int, int]]:
-        return [(p, pool.index(key)) for p, pool in enumerate(self.pools, 1) if key in pool]
 
-    def pointers(self, key: str) -> list[tuple[int, int, tuple[int, ...]]]:
-        """(data_file_id, block_index, record) for every record pointing at this key."""
-        out = []
-        kinds = {1: 0x400, 2: 0x800}
-        for pool_no, idx in self.find(key):
-            for r in self.records:
-                if r[0] == idx and r[2] != NO_POINTER and (r[7] & ~1) == kinds.get(pool_no, -1):
-                    out.append((r[2] & 0xFFFF, (r[2] >> 16) & 0xFFFF, r))
-        return out
+def _strings(data: bytes, pos: int, n: int, align: bool) -> tuple[list[str], int]:
+    out = []
+    for _ in range(n):
+        ln = struct.unpack_from("<H", data, pos)[0]
+        out.append(data[pos + 2 : pos + 2 + ln].decode("utf-8", errors="replace"))
+        pos += 2 + ln
+        if align:
+            pos = (pos + 7) & ~7
+    return out, pos
 
 
 def parse_manifest(path: Path) -> Manifest:
     data = zstd(path.read_bytes())
-    v1, v2, unk0, n_pool2, n_table, n_pool3, n_pool1 = struct.unpack_from("<HHIIIII", data, 0)
-    pos = 24
-    pools = []
-    for n in (n_pool1, n_pool2, n_pool3):
-        pool = []
-        for _ in range(n):
-            ln = struct.unpack_from("<H", data, pos)[0]
-            pos += 2
-            pool.append(data[pos : pos + ln].decode("utf-8", errors="replace"))
-            pos = (pos + ln + 7) & ~7
-        pools.append(pool)
-    records = [struct.unpack_from("<8I", data, pos + i * 32) for i in range(n_table)]
-    return Manifest(pools, records)
+    _, _, _, n_tables, n_shards, n_extern, n_other = struct.unpack_from("<HHIIIII", data, 0)
+    names, pos = _strings(data, 24, n_tables, True)
+    extern, pos = _strings(data, pos, n_extern, True)
+    other, pos = _strings(data, pos, n_other, True)
+    tables = {}
+    for i, name in enumerate(names):
+        rows, shard_count, schema, patch_schema, _, _, first, kind = struct.unpack_from("<8I", data, pos + 32 * i)
+        tables[name] = Table(name, rows, shard_count, schema, patch_schema, first, kind)
+    pos += 32 * n_tables
+    shards = [struct.unpack_from("<II", data, pos + 8 * i) for i in range(n_shards)]
+    return Manifest(tables, shards, extern, other)
+
+
+# ---------------------------------------------------------------- store
+
+
+class Container:
+    """One index/data file, mmapped; blocks are decompressed on demand."""
+
+    def __init__(self, path: Path):
+        self._f = open(path, "rb")
+        self._mm = mmap.mmap(self._f.fileno(), 0, access=mmap.ACCESS_READ)
+        magic, _, count, _ = struct.unpack_from("<IIII", self._mm, 0)
+        if magic != HD_MAGIC:
+            raise ValueError(f"{path}: bad magic")
+        self._ends = struct.unpack_from(f"<{count}I", self._mm, 16)
+        self._base = 16 + 4 * count
+
+    def __len__(self) -> int:
+        return len(self._ends)
+
+    def block(self, index: int) -> bytes:
+        start = self._base + (self._ends[index - 1] if index else 0)
+        return zstd(self._mm[start + 9 : self._base + self._ends[index]])
+
+
+class Store:
+    def __init__(self, hd_dir: Path, locale: Locale | None = None):
+        self.dir = hd_dir
+        self.locale = locale
+        self.manifest = parse_manifest(hd_dir / "MANIFEST")
+        self._files: dict[str, Container] = {}
+        self._blocks: OrderedDict[tuple[str, int], bytes] = OrderedDict()
+
+    def block(self, kind: str, file_no: int, index: int) -> bytes:
+        name = f"{kind}{file_no}"
+        key = (name, index)
+        if key in self._blocks:
+            self._blocks.move_to_end(key)
+            return self._blocks[key]
+        if name not in self._files:
+            self._files[name] = Container(self.dir / name)
+        buf = self._files[name].block(index)
+        self._blocks[key] = buf
+        if len(self._blocks) > BLOCK_CACHE:
+            self._blocks.popitem(last=False)
+        return buf
+
+    def _ptr(self, ptr: int) -> bytes:
+        return self.block("index", ptr & 0xFFFF, ptr >> 16)
+
+    def schema(self, ptr: int) -> list[str]:
+        if ptr == NONE:
+            return []
+        buf = self._ptr(ptr)
+        return _strings(buf, 2, struct.unpack_from("<H", buf, 0)[0], False)[0]
+
+    def shard(self, ptr: int) -> list[tuple[int, int, int, int, int]]:
+        """Used slots of a hash-map block: (key, data_file, block, offset8, length8)."""
+        buf = self._ptr(ptr)
+        cap = struct.unpack_from("<Q", buf, 0)[0]
+        base = (24 + cap + 16 + 7) & ~7
+        return [struct.unpack_from("<QHHHH", buf, base + 16 * i) for i in range(cap) if buf[24 + i] < 0x80]
+
+    def locations(self, t: Table) -> dict[int, tuple[int, int, int, int, bool]]:
+        """key -> (data_file, block, offset8, length8, from_patch); deleted rows removed."""
+        loc: dict[int, tuple[int, int, int, int, bool]] = {}
+        for base, patch in self.manifest.shards[t.first_shard : t.first_shard + t.shard_count]:
+            for ptr, patched in ((base, False), (patch, True)):
+                if ptr == NONE:
+                    continue
+                for key, f, b, off, ln in self.shard(ptr):
+                    if ln:
+                        loc[key] = (f, b, off, ln, patched)
+                    else:
+                        loc.pop(key, None)
+        return loc
+
+    def table(self, name: str) -> dict:
+        t = self.manifest.tables[name]
+        fields = self.schema(t.schema)
+        patch_fields = self.schema(t.patch_schema) or fields
+        rows, errors = [], 0
+        loc = self.locations(t)
+        for key in sorted(loc, key=lambda k: (loc[k][:3], k)):
+            f, b, off, ln, patched = loc[key]
+            seg = self.block("data", f, b)[off * 8 : (off + ln) * 8]
+            try:
+                value = decode_value(seg, patch_fields if patched else fields, bool(t.kind & 1))
+            except (PayloadError, struct.error, IndexError) as e:
+                value, errors = {"_error": str(e), "_raw": seg.hex()}, errors + 1
+            if self.locale:
+                value = self.locale.resolve(value)
+            rows.append({"_key": key, "value": value} if not isinstance(value, dict) else {"_key": key, **value})
+        rows.sort(key=lambda r: r["_key"])
+        return {"name": name, "kind": t.kind, "fields": fields, "errors": errors, "rows": rows}
+
+
+class Locale:
+    """Text id -> string for one language; the _diff file overrides the base file."""
+
+    def __init__(self, hd_dir: Path, lang: str):
+        paths = [hd_dir / "locale" / f"translate_words_map_{lang}{sfx}" for sfx in ("_diff", "")]
+        self._files = [Container(p) for p in paths if p.exists()]
+        if not self._files:
+            raise FileNotFoundError(f"no locale files for {lang!r} in {hd_dir / 'locale'}")
+        self._shards: OrderedDict[tuple[int, int], dict[int, str]] = OrderedDict()
+
+    def _shard(self, file_no: int, index: int) -> dict[int, str]:
+        key = (file_no, index)
+        if key in self._shards:
+            self._shards.move_to_end(key)
+            return self._shards[key]
+        buf = self._files[file_no].block(index)
+        cap = struct.unpack_from("<Q", buf, 0)[0]
+        base = (24 + cap + 16 + 7) & ~7
+        out = {}
+        for i in range(cap):
+            if buf[24 + i] < 0x80:
+                pos = base + 16 * i
+                tid, off, ln = struct.unpack_from("<QII", buf, pos)
+                out[tid] = buf[pos + 8 + off : pos + 8 + off + ln].decode("utf-8", errors="replace")
+        self._shards[key] = out
+        if len(self._shards) > LOCALE_CACHE:
+            self._shards.popitem(last=False)
+        return out
+
+    def text(self, tid: int) -> str | None:
+        for n, c in enumerate(self._files):
+            s = self._shard(n, 1 + tid % (len(c) - 1)).get(tid)
+            if s is not None:
+                return s
+        return None
+
+    def resolve(self, value):
+        """Replace every 64-bit integer that is a known text id, recursively."""
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, int):
+            return (self.text(value) or value) if value > 0xFFFFFFFF else value
+        if isinstance(value, list):
+            return [self.resolve(v) for v in value]
+        if isinstance(value, dict):
+            return {k: (v if k == "_key" else self.resolve(v)) for k, v in value.items()}
+        return value
 
 
 # ---------------------------------------------------------------- payload
@@ -115,6 +257,12 @@ def parse_manifest(path: Path) -> Manifest:
 
 class PayloadError(ValueError):
     pass
+
+
+TLV_NUM = {0x01: ("<B", 1), 0x02: ("<H", 2), 0x03: ("<I", 4), 0x04: ("<Q", 8), 0x05: ("<f", 4), 0x06: ("<d", 8)}
+TLV_LIT = {0x0B: None, 0x0C: False, 0x0D: True}
+CELL_NUM = {0x04: ("<B", 1), 0x02: ("<h", 2), 0x08: ("<H", 2), 0x0C: ("<I", 4), 0x10: ("<Q", 8),
+            0x14: ("<f", 4), 0x18: ("<d", 8), 0x06: ("<b", 1), 0x0A: ("<i", 4), 0x0E: ("<q", 8)}
 
 
 def tlv(buf: bytes, pos: int):
@@ -129,60 +277,30 @@ def tlv(buf: bytes, pos: int):
         if tag == 0x0A and n % 2 == 0 and all(isinstance(items[i], str) for i in range(0, n, 2)):
             return {items[i]: items[i + 1] for i in range(0, n, 2)}, pos
         return items, pos
-    if tag in (0x08, 0x28):
+    if tag == 0x08:
         n = struct.unpack_from("<H", buf, pos + 1)[0]
-        raw = buf[pos + 3 : pos + 3 + n]
-        return (raw.decode("utf-8", errors="replace") if tag == 0x08 else raw.hex()), pos + 3 + n
-    simple = {0x01: ("<B", 1), 0x02: ("<H", 2), 0x03: ("<I", 4), 0x04: ("<Q", 8), 0x05: ("<f", 4), 0x06: ("<d", 8)}
-    if tag in simple:
-        fmt, size = simple[tag]
+        return buf[pos + 3 : pos + 3 + n].decode("utf-8", errors="replace"), pos + 3 + n
+    if tag in TLV_NUM:
+        fmt, size = TLV_NUM[tag]
         return struct.unpack_from(fmt, buf, pos + 1)[0], pos + 1 + size
-    lit = {0x0B: None, 0x0C: False, 0x0D: True}
-    if tag in lit:
-        return lit[tag], pos + 1
+    if tag in TLV_LIT:
+        return TLV_LIT[tag], pos + 1
     raise PayloadError(f"unknown TLV tag {tag:#x} at {pos}")
 
 
-def ftv(buf: bytes, pos: int):
-    fid, t = buf[pos], buf[pos + 1]
-    body = pos + 2
-    if t in (0x00, 0x01):
-        return (fid, t == 1), body
-    simple = {0x04: ("<B", 1), 0x02: ("<H", 2), 0x0C: ("<I", 4), 0x10: ("<Q", 8), 0x14: ("<f", 4), 0x18: ("<d", 8)}
-    if t in simple:
-        fmt, size = simple[t]
-        return (fid, struct.unpack_from(fmt, buf, body)[0]), body + size
-    if t == 0x20:
-        n = struct.unpack_from("<H", buf, body)[0]
-        return (fid, buf[body + 2 : body + 2 + n].decode("utf-8", errors="replace")), body + 2 + n
-    if t == 0x24:
-        n = struct.unpack_from("<H", buf, body)[0]
-        pos = body + 2
-        items = []
-        for _ in range(n):
-            v, pos = tlv(buf, pos)
-            items.append(v)
-        return (fid, items), pos
-    raise PayloadError(f"unknown FTV type {t:#x} at {pos}")
-
-
-FTV_SIMPLE = {0x04: ("<B", 1), 0x02: ("<h", 2), 0x08: ("<H", 2), 0x0C: ("<I", 4), 0x10: ("<Q", 8),
-              0x14: ("<f", 4), 0x18: ("<d", 8), 0x06: ("<b", 1), 0x0A: ("<i", 4), 0x0E: ("<q", 8)}
-
-
-def ftv_token(buf: bytes, pos: int):
-    """One table cell: u8 field index, u8 type, value. Types seen: bool 0/1, ints by width, f32/f64, str, TLV array."""
+def cell(buf: bytes, pos: int):
+    """One row cell: u8 field id, u8 type (bool 0/1, numbers by width, 0x20 str, 0x24/0x28 TLV sequence)."""
     fid, t = buf[pos], buf[pos + 1]
     body = pos + 2
     if t in (0x00, 0x01):
         return fid, t == 1, body
-    if t in FTV_SIMPLE:
-        fmt, size = FTV_SIMPLE[t]
+    if t in CELL_NUM:
+        fmt, size = CELL_NUM[t]
         return fid, struct.unpack_from(fmt, buf, body)[0], body + size
     if t == 0x20:
         n = struct.unpack_from("<H", buf, body)[0]
         return fid, buf[body + 2 : body + 2 + n].decode("utf-8", errors="replace"), body + 2 + n
-    if t == 0x24:
+    if t in (0x24, 0x28):
         n = struct.unpack_from("<H", buf, body)[0]
         pos = body + 2
         items = []
@@ -193,136 +311,94 @@ def ftv_token(buf: bytes, pos: int):
     raise PayloadError(f"unknown cell type {t:#x} at {pos}")
 
 
-def table_rows(buf: bytes) -> tuple[list[dict], int, str | None]:
-    """
-    Data-table block: rows of `u16 field_count` + cells, each row padded to 8 bytes.
-    Returns (rows, bytes_consumed, error). Blocks may carry a trailing TLV section.
-    """
-    pos, rows, err = 0, [], None
-    while pos + 2 <= len(buf):
-        n = struct.unpack_from("<H", buf, pos)[0]
-        if n == 0 or n > 120:
-            break
-        start = pos
-        pos += 2
-        row = {}
-        try:
-            for _ in range(n):
-                fid, v, pos = ftv_token(buf, pos)
-                row[fid] = v
-        except (PayloadError, struct.error, IndexError) as e:
-            err = f"{e} in row {len(rows)}"
-            pos = start
-            break
-        rows.append(row)
-        pos = (pos + 7) & ~7
-    return rows, pos, err
-
-
-def has_graph_header(buf: bytes, pos: int) -> bool:
-    return len(buf) >= pos + 8 and struct.unpack_from("<HHHH", buf, pos)[0::3] == (0x0003, 0x0101) and buf[pos + 2 : pos + 4] == b"\x00\x28"
-
-
-def decode_payload(buf: bytes) -> dict:
-    pos = 8 if has_graph_header(buf, 0) else 0
-    dialect = "tlv" if pos < len(buf) and buf[pos] in (0x0A, 0x09) else "ftv"
-    items, error = [], None
-    while pos < len(buf):
-        if has_graph_header(buf, pos):
-            pos += 8
-            continue
-        if dialect == "tlv" and buf[pos] == 0:
-            pos += 1
-            continue
-        try:
-            v, pos = (tlv if dialect == "tlv" else ftv)(buf, pos)
-            items.append(v)
-        except (PayloadError, struct.error, IndexError) as e:
-            if dialect == "ftv" and buf[pos] == 0:
-                pos += 1
-                continue
-            error = f"{e} (consumed {pos}/{len(buf)})"
-            break
-    return {"dialect": dialect, "size": len(buf), "error": error, "items": items}
+def decode_value(seg: bytes, fields: list[str], bare: bool):
+    """A stored row: bare TLV value (schemaless tables) or `u16 cell_count` + cells keyed by field name."""
+    if bare:
+        return tlv(seg, 0)[0]
+    n = struct.unpack_from("<H", seg, 0)[0]
+    pos, row = 2, {}
+    for _ in range(n):
+        fid, v, pos = cell(seg, pos)
+        row[fields[fid] if fid < len(fields) else f"#{fid}"] = v
+    return row
 
 
 # ---------------------------------------------------------------- cli
+
+
+def out_path(root: Path, name: str) -> Path:
+    """Tables are grouped by their first dotted component (spaces.s1.x -> spaces/s1.x.json)."""
+    head, _, rest = name.partition(".")
+    safe = re.sub(r"[^\w.\-]", "_", rest or head)
+    return root / head / f"{safe}.json" if rest else root / f"{safe}.json"
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("hd_dir")
     ap.add_argument("--list", nargs="?", const=".", metavar="REGEX")
-    ap.add_argument("--key")
-    ap.add_argument("--block", metavar="dataN:IDX")
-    ap.add_argument("--raw", action="store_true", help="write the raw decompressed block instead of JSON")
-    ap.add_argument("--dump-tables", metavar="DIR", help="decode every data block as table rows into DIR/<file>_<block>.json + blocks.csv")
+    ap.add_argument("--table")
+    ap.add_argument("--dump", metavar="DIR")
+    ap.add_argument("--match", default=".", metavar="REGEX", help="table name filter for --dump")
+    ap.add_argument("--block", metavar="FILE:IDX", help="e.g. data5:123 or index1:7")
+    ap.add_argument("--locale", metavar="LANG", help="resolve text ids, e.g. en, zh_cn")
     ap.add_argument("-o", "--output")
     args = ap.parse_args()
     hd = Path(args.hd_dir)
-
-    if args.dump_tables:
-        import csv
-        out = Path(args.dump_tables)
-        out.mkdir(parents=True, exist_ok=True)
-        with open(out / "blocks.csv", "w", newline="") as f:
-            w = csv.writer(f)
-            w.writerow(["file", "block", "size", "rows", "nfields_max", "consumed", "error", "sample"])
-            for df in sorted(hd.glob("data*"), key=lambda p: int(p.name[4:])):
-                blocks = container_blocks(df)
-                raw = df.read_bytes()
-                for i, (s, e) in enumerate(blocks):
-                    try:
-                        payload = zstd(raw[s + 9 : e])
-                    except Exception:
-                        continue
-                    rows, used, err = table_rows(payload)
-                    if not rows:
-                        continue
-                    nf = max(len(r) for r in rows)
-                    (out / f"{df.name}_{i}.json").write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
-                    w.writerow([df.name, i, len(payload), len(rows), nf, used, err or "", json.dumps(rows[0], ensure_ascii=False)[:200]])
-                print(df.name, len(blocks), "blocks", flush=True)
-        return
-
-    man = parse_manifest(hd / "MANIFEST")
+    store = Store(hd, Locale(hd, args.locale) if args.locale else None)
+    tables = store.manifest.tables
 
     if args.list:
         rx = re.compile(args.list)
-        for p, pool in enumerate(man.pools, 1):
-            for i, k in enumerate(pool):
-                if rx.search(k):
-                    ptrs = [(f"data{d}", b) for d, b, _ in man.pointers(k)]
-                    print(f"pool{p}[{i}] {k} -> {ptrs}")
+        for t in tables.values():
+            if rx.search(t.name):
+                print(f"{t.name}\trows={t.rows}\tshards={t.shard_count}\tkind={t.kind:#x}")
         return
 
-    targets = []
     if args.block:
         name, idx = args.block.split(":")
-        targets.append((name, int(idx)))
-    if args.key:
-        ptrs = man.pointers(args.key)
-        if not ptrs:
-            sys.exit(f"key not found or has no pointer records: {args.key}")
-        targets += [(f"data{d}", b) for d, b, _ in ptrs]
-    if not targets:
-        ap.error("need --list, --key or --block")
+        kind = name.rstrip("0123456789")
+        buf = store.block(kind, int(name[len(kind):]), int(idx))
+        Path(args.output or f"{name}_{idx}.bin").write_bytes(buf)
+        print(f"{args.block}: {len(buf)} bytes")
+        return
 
-    results = []
-    for name, idx in targets:
-        payload = read_block(hd / name, idx)
-        if args.raw:
-            Path(args.output or f"{name}_{idx}.bin").write_bytes(payload)
-            print(f"{name}:{idx} -> {len(payload)} bytes raw")
-            continue
-        results.append({"block": f"{name}:{idx}", **decode_payload(payload)})
-    if results:
-        text = json.dumps(results if len(results) > 1 else results[0], ensure_ascii=False, indent=1)
+    if args.table:
+        if args.table not in tables:
+            sys.exit(f"no such table: {args.table}")
+        text = json.dumps(store.table(args.table), ensure_ascii=False, indent=1)
         if args.output:
             Path(args.output).write_text(text, encoding="utf-8")
             print(f"wrote {args.output}")
         else:
-            print(text[:20000])
+            print(text)
+        return
+
+    if args.dump:
+        import csv
+        root = Path(args.dump)
+        root.mkdir(parents=True, exist_ok=True)
+        rx = re.compile(args.match)
+        picked = [t for t in tables.values() if rx.search(t.name)]
+        with open(root / "tables.csv", "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["name", "kind", "rows_declared", "rows", "errors", "fields"])
+            for i, t in enumerate(picked, 1):
+                try:
+                    res = store.table(t.name)
+                except Exception as e:
+                    w.writerow([t.name, hex(t.kind), t.rows, -1, str(e), ""])
+                    continue
+                p = out_path(root, t.name)
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text(json.dumps(res, ensure_ascii=False), encoding="utf-8")
+                w.writerow([t.name, hex(t.kind), t.rows, len(res["rows"]), res["errors"], " ".join(res["fields"])])
+                if i % 5000 == 0:
+                    print(f"{i}/{len(picked)}", flush=True)
+        print(f"dumped {len(picked)} tables to {root}")
+        return
+
+    ap.error("need --list, --table, --dump or --block")
 
 
 if __name__ == "__main__":

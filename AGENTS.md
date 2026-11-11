@@ -8,7 +8,8 @@ External reference for anything not covered there: https://github.com/ArArgon/yy
 - `tools/wwm_decode_text.py` — HEX_/HEXB_/shift-1/CLv2/LocalDB text decoder
 - `tools/wwm_harvest_paths.py` — path harvest + `file_id()` hash; `load_tool()` imports siblings once (pickling needs this)
 - `tools/wwm_csb.py`, `tools/wwm_ui_map.py`, `tools/wwm_atlas.py` — Cocos UI: csb decode, UI map, atlas frame cutting
-- `tools/wwm_lua.py` — LuaText → stock Lua 5.4 bytecode (+ unluac)
+- `tools/wwm_lua.py` — LuaText → stock Lua 5.4 bytecode (+ unluac; needs `tools/unluac-messiah.patch`)
+- `tools/wwm_hd.py` — HD store data tables: `Store.table(name)`, `Locale` text ids; `--list/--table/--dump`
 - `mpk/` — Rust: v3 `.mpkinfo` parser (`v3_parser.rs`), legacy v1 reader
 - `texture/` — Rust: `EPixelFormat` enum; texture decoding not ported yet
 - `resources/` — Rust: legacy Diablo Immortal `.repository` code, untouched
