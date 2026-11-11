@@ -11,7 +11,8 @@ Usage:
   wwm_patch_override.py <install_root> <vfs_path> <replacement_file> --apply
   wwm_patch_override.py <install_root> <vfs_path> --revert
 
-Close the game first: the tool refuses to write while wwm.exe is running.
+Close the game first: the tool refuses to write while wwm.exe is running here or the database
+looks in use (it cannot see a game running in a VM or on another machine that shares the disk).
 """
 
 from __future__ import annotations
@@ -54,26 +55,64 @@ def signed64(v: int) -> int:
 
 
 def game_running() -> bool:
+    """True when a local process was started from a wwm.exe binary."""
     for pid in filter(str.isdigit, os.listdir("/proc")):
         try:
-            if b"wwm.exe" in Path(f"/proc/{pid}/cmdline").read_bytes():
-                return True
+            argv = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
         except OSError:
             continue
+        if any(a.replace(b"\\", b"/").rsplit(b"/", 1)[-1].lower() == b"wwm.exe" for a in argv[:3]):
+            return True
     return False
 
 
-def pick_pack(patch_dir: Path) -> int:
-    """Highest-numbered empty Patch<n>.mpk below the user-content range."""
-    empty = [
-        int(m.group(1))
+def pick_pack(patch_dir: Path, con: sqlite3.Connection) -> int:
+    """
+    Highest-numbered empty Patch<n>.mpk below the user-content range. When every pack is in use,
+    the highest indexed pack whose entries end exactly at its file size (safe to append to).
+    """
+    sizes = {
+        int(m.group(1)): (patch_dir / f).stat().st_size
         for f in os.listdir(patch_dir)
-        if (m := re.fullmatch(r"Patch(\d+)\.mpk", f)) and (patch_dir / f).stat().st_size == 0
-    ]
-    empty = [n for n in empty if n < USER_PACK_LIMIT]
-    if not empty:
-        sys.exit("no empty patch pack found; pass --pack")
-    return max(empty)
+        if (m := re.fullmatch(r"Patch(\d+)\.mpk", f))
+    }
+    empty = [n for n, size in sizes.items() if size == 0 and n < USER_PACK_LIMIT]
+    if empty:
+        return max(empty)
+    ends = con.execute(
+        "select v2, max(v6 + v1) from (select v1, v2, v6 from info0 union all select v1, v2, v6 from info1) "
+        "where v2 < ? group by v2 order by v2 desc", (USER_PACK_LIMIT,)
+    )
+    for pack_no, end in ends:
+        if sizes.get(pack_no) == end:
+            return pack_no
+    sys.exit("no suitable patch pack found; pass --pack")
+
+
+def database_busy(db_path: Path) -> str | None:
+    """Reason to believe another process has the database open, else None."""
+    wal = Path(f"{db_path}-wal")
+    if wal.exists() and wal.stat().st_size:
+        return f"{wal.name} is not empty"
+    con = sqlite3.connect(db_path, timeout=0)
+    try:
+        con.execute("begin exclusive")
+        con.execute("rollback")
+    except sqlite3.OperationalError as e:
+        return str(e)
+    finally:
+        con.close()
+    return None
+
+
+def refuse_if_in_use(db_path: Path, force: bool) -> None:
+    if force:
+        return
+    if game_running():
+        sys.exit("wwm.exe is running; close the game first")
+    reason = database_busy(db_path)
+    if reason:
+        sys.exit(f"patch database looks in use ({reason}); close the game, or pass --force if it is closed")
 
 
 def journal_path(backup_dir: Path, file_id: int) -> Path:
@@ -82,7 +121,8 @@ def journal_path(backup_dir: Path, file_id: int) -> Path:
 
 def apply(args: argparse.Namespace, patch_dir: Path, db_path: Path, file_id: int) -> None:
     data = Path(args.replacement).read_bytes()
-    pack_no = args.pack if args.pack is not None else pick_pack(patch_dir)
+    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as ro:
+        pack_no = args.pack if args.pack is not None else pick_pack(patch_dir, ro)
     pack = patch_dir / f"Patch{pack_no}.mpk"
     offset = pack.stat().st_size if pack.exists() else 0
     chash = content_hash(data)
@@ -98,8 +138,7 @@ def apply(args: argparse.Namespace, patch_dir: Path, db_path: Path, file_id: int
     if not args.apply:
         print("dry run: nothing written (add --apply)")
         return
-    if game_running() and not args.force:
-        sys.exit("wwm.exe is running; close the game first")
+    refuse_if_in_use(db_path, args.force)
 
     args.backup_dir.mkdir(parents=True, exist_ok=True)
     db_backup = args.backup_dir / f"Patch.mpkdb.{time.strftime('%Y%m%d-%H%M%S')}"
@@ -135,8 +174,7 @@ def revert(args: argparse.Namespace, db_path: Path, file_id: int) -> None:
     if not journal.exists():
         sys.exit(f"no journal for {file_id:016x} in {args.backup_dir}")
     j = json.loads(journal.read_text())
-    if game_running() and not args.force:
-        sys.exit("wwm.exe is running; close the game first")
+    refuse_if_in_use(db_path, args.force)
     row, pack = j["row"], Path(j["pack"])
     con = sqlite3.connect(db_path)
     try:
@@ -170,7 +208,7 @@ def main() -> None:
     ap.add_argument("--revert", action="store_true", help="undo a previous --apply for this path")
     ap.add_argument("--pack", type=int, help="patch pack number to append to (default: an empty one)")
     ap.add_argument("--backup-dir", type=Path, default=DEFAULT_BACKUP_DIR)
-    ap.add_argument("--force", action="store_true", help="write even though wwm.exe is running")
+    ap.add_argument("--force", action="store_true", help="skip the game-running and database-in-use checks")
     args = ap.parse_args()
 
     patch_dir = args.install_root / "LocalData" / "Patch"
