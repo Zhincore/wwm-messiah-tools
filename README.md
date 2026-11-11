@@ -137,7 +137,9 @@ See `docs/chat-markup.md` (tag grammar, components, colour codes, emotes).
 - `tools/wwm_lua.py` — Lua bytecode dump (LuaText → stock 5.4 → optional unluac); `tools/unluac-messiah.patch`
 - `tools/wwm_hd.py` — HD store data tables (MANIFEST/index/data) + locale text
 - `tools/wwm_texture_index.py` — header-only texture census
-- `tools/wwm_patch_override.py` — experimental: override a VFS file through a `Patch.mpkdb` entry (journalled, `--revert`)
+- `tools/wwm_patch_override.py` — experimental: replace one VFS file, either through a `Patch.mpkdb` entry or
+  `--in-place` in its pack; EZST/ZSTD entries are re-compressed (in place: to the exact stored size),
+  everything is journalled and `--revert` restores it. Only the login video swap is confirmed in game.
 - `docs/chat-markup.md` — rich-text markup reference
 - `mpk/` — Rust: v1 reader (Diablo Immortal era) and v3 `.mpkinfo` parser
 - `texture/` — Rust: EZST codec, texture container parser, PNG/DDS conversion
