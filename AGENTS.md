@@ -11,7 +11,7 @@ External reference for anything not covered there: https://github.com/ArArgon/yy
 - `tools/wwm_lua.py` — LuaText → stock Lua 5.4 bytecode (+ unluac; needs `tools/unluac-messiah.patch`)
 - `tools/wwm_hd.py` — HD store data tables: `Store.table(name)`, `Locale` text ids; `--list/--table/--dump`
 - `mpk/` — Rust: v3 `.mpkinfo` parser (`v3_parser.rs`), legacy v1 reader
-- `texture/` — Rust: `EPixelFormat` enum; texture decoding not ported yet
+- `texture/` — Rust: `ezst`, `container`, `convert` (PNG via texture2ddecoder, DDS DX10); CLI converts payload files
 - `resources/` — Rust: legacy Diablo Immortal `.repository` code, untouched
 
 ## Rules
@@ -26,5 +26,5 @@ External reference for anything not covered there: https://github.com/ArArgon/yy
 - Working outputs (harvests, csb dumps, logs) go to `~/.claude/projects/<slug>/work/`, not `/tmp` (lost on reboot).
 - Extraction output is large (~50 GB full). Check `df` before running; write outside the repo.
 - Game data, extracted assets, manifests: never commit.
-- Rust: run `cargo test -p messiah-mpk` after touching `mpk/`.
+- Rust: run `cargo test -p messiah-mpk` / `-p messiah-texture` after touching those crates.
 - Keep comments to what the code does; no change logs in code.

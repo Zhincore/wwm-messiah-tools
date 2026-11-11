@@ -14,4 +14,7 @@ byteorder = "1"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 lz4_flex = { version = "0.9", default-features = false, features = ["std"] }
-ddsfile = "*"
+aes = "0.8"
+ruzstd = "0.7"
+texture2ddecoder = "0.1"
+png = "0.17"

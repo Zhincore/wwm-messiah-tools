@@ -3,7 +3,7 @@ use num_enum::TryFromPrimitive;
 extern crate static_assertions as sa;
 
 #[allow(non_camel_case_types, dead_code)]
-#[derive(PartialEq, Debug, TryFromPrimitive)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug, TryFromPrimitive)]
 #[repr(u8)]
 pub enum EPixelFormat {
     Unknown = 0,
@@ -79,3 +79,36 @@ pub enum EPixelFormat {
 }
 
 sa::const_assert!(EPixelFormat::BC7 as u8 == 25);
+
+impl EPixelFormat {
+    /// DXGI_FORMAT used when the pixel data is wrapped in a DDS (DX10) file.
+    pub fn dxgi(self) -> Option<u32> {
+        use EPixelFormat::*;
+        Some(match self {
+            A32R32G32B32F => 2,
+            A16B16G16R16F => 10,
+            R8G8B8A8 => 28,
+            B5G6R5 => 85,
+            G16R16 => 35,
+            G16R16F => 34,
+            G32R32F => 16,
+            R32F => 41,
+            R16F => 54,
+            L8 => 61,
+            L16 => 56,
+            A8 => 65,
+            BC1 => 71,
+            BC2 => 74,
+            BC3 => 77,
+            BC4 => 80,
+            BC5 => 83,
+            BC6H_SF => 96,
+            BC6H_UF => 95,
+            BC7 => 98,
+            R10G10B10A2 => 24,
+            R32U => 42,
+            R11G11B10F => 26,
+            _ => return None,
+        })
+    }
+}

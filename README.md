@@ -136,7 +136,8 @@ See `docs/chat-markup.md` (tag grammar, components, colour codes, emotes).
 - `tools/wwm_texture_index.py` — header-only texture census
 - `docs/chat-markup.md` — rich-text markup reference
 - `mpk/` — Rust: v1 reader (Diablo Immortal era) and v3 `.mpkinfo` parser
-- `texture/` — Rust: Messiah `EPixelFormat` enum (texture decoding not yet ported)
+- `texture/` — Rust: EZST codec, texture container parser, PNG/DDS conversion
+  (`cargo run -p messiah-texture -- <payload files or dir> -o OUT [--dds]`)
 - `resources/` — Rust: v1 `.repository` handling (Diablo Immortal)
 
 ## Credits
