@@ -18,8 +18,11 @@ Layout:
              capacity control bytes (< 0x80 = used) + 16 mirror bytes, 8-aligned, then capacity slots:
                u64 key, u16 data_file, u16 block, u16 offset/8, u16 length/8   (length 0 = row deleted)
              Patch shards override base shards key by key.
-  row        u16 cell_count + cells (u8 field id, u8 type, value), see `cell`
-  TLV value  0x0a dict / 0x09 list / 0x08 str / 0x01-0x06 numbers / 0x0b-0x0d null,false,true
+  row        u16 cell_count + cells: u8 field id, u8 type, value. type = (TLV tag << 2) | f,
+             f = 1 adds 256 to the field id; the value is the TLV body without its tag byte
+  TLV value  u8 tag: 0x01-0x04 u8/u16/u32/u64, 0x05 f32, 0x06 f64, 0x08 str (u16 len),
+             0x09 list / 0x0a dict (u16 item count, items are TLVs; a dict alternates key, value),
+             0x0b null, 0x0c false, 0x0d true
   locale     locale/translate_words_map_<lang>[_diff]: same container; block 0 = directory, text id lives in
              block 1 + id % (blocks - 1), a hash map with slots u64 id, u32 offset, u32 length; the offset
              is relative to the offset field itself. u64 cells holding text ids resolve through it.
@@ -169,28 +172,28 @@ class Store:
         base = (24 + cap + 16 + 7) & ~7
         return [struct.unpack_from("<QHHHH", buf, base + 16 * i) for i in range(cap) if buf[24 + i] < 0x80]
 
-    def locations(self, t: Table) -> dict[int, tuple[int, int, int, int, bool]]:
-        """key -> (data_file, block, offset8, length8, from_patch); deleted rows removed."""
-        loc: dict[int, tuple[int, int, int, int, bool]] = {}
+    def locations(self, t: Table) -> list[tuple[int, int, int, int, int, bool]]:
+        """(key, data_file, block, offset8, length8, from_patch) per live row. Keys repeat across shards."""
+        out = []
         for base, patch in self.manifest.shards[t.first_shard : t.first_shard + t.shard_count]:
+            rows: dict[int, tuple[int, int, int, int, bool]] = {}
             for ptr, patched in ((base, False), (patch, True)):
                 if ptr == NONE:
                     continue
                 for key, f, b, off, ln in self.shard(ptr):
                     if ln:
-                        loc[key] = (f, b, off, ln, patched)
+                        rows[key] = (f, b, off, ln, patched)
                     else:
-                        loc.pop(key, None)
-        return loc
+                        rows.pop(key, None)
+            out.extend((key, *v) for key, v in rows.items())
+        return out
 
     def table(self, name: str) -> dict:
         t = self.manifest.tables[name]
         fields = self.schema(t.schema)
         patch_fields = self.schema(t.patch_schema) or fields
         rows, errors = [], 0
-        loc = self.locations(t)
-        for key in sorted(loc, key=lambda k: (loc[k][:3], k)):
-            f, b, off, ln, patched = loc[key]
+        for key, f, b, off, ln, patched in sorted(self.locations(t), key=lambda r: r[1:4]):
             seg = self.block("data", f, b)[off * 8 : (off + ln) * 8]
             try:
                 value = decode_value(seg, patch_fields if patched else fields, bool(t.kind & 1))
@@ -261,54 +264,44 @@ class PayloadError(ValueError):
 
 TLV_NUM = {0x01: ("<B", 1), 0x02: ("<H", 2), 0x03: ("<I", 4), 0x04: ("<Q", 8), 0x05: ("<f", 4), 0x06: ("<d", 8)}
 TLV_LIT = {0x0B: None, 0x0C: False, 0x0D: True}
-CELL_NUM = {0x04: ("<B", 1), 0x02: ("<h", 2), 0x08: ("<H", 2), 0x0C: ("<I", 4), 0x10: ("<Q", 8),
-            0x14: ("<f", 4), 0x18: ("<d", 8), 0x06: ("<b", 1), 0x0A: ("<i", 4), 0x0E: ("<q", 8)}
+TLV_STR, TLV_LIST, TLV_DICT = 0x08, 0x09, 0x0A
+
+
+def tlv_body(tag: int, buf: bytes, pos: int):
+    """Value of a TLV whose tag byte was already consumed; returns (value, next position)."""
+    if tag in TLV_NUM:
+        fmt, size = TLV_NUM[tag]
+        return struct.unpack_from(fmt, buf, pos)[0], pos + size
+    if tag in TLV_LIT:
+        return TLV_LIT[tag], pos
+    if tag == TLV_STR:
+        n = struct.unpack_from("<H", buf, pos)[0]
+        return buf[pos + 2 : pos + 2 + n].decode("utf-8", errors="replace"), pos + 2 + n
+    if tag in (TLV_LIST, TLV_DICT):
+        n = struct.unpack_from("<H", buf, pos)[0]
+        pos += 2
+        items = []
+        for _ in range(n):
+            v, pos = tlv(buf, pos)
+            items.append(v)
+        keys = items[0::2]
+        if tag == TLV_DICT and n % 2 == 0 and all(isinstance(k, (str, int)) and not isinstance(k, bool) for k in keys):
+            return {str(k): v for k, v in zip(keys, items[1::2])}, pos
+        return items, pos
+    raise PayloadError(f"unknown TLV tag {tag:#x} at {pos - 1}")
 
 
 def tlv(buf: bytes, pos: int):
-    tag = buf[pos]
-    if tag in (0x0A, 0x09):
-        n = struct.unpack_from("<H", buf, pos + 1)[0]
-        pos += 3
-        items = []
-        for _ in range(n):
-            v, pos = tlv(buf, pos)
-            items.append(v)
-        if tag == 0x0A and n % 2 == 0 and all(isinstance(items[i], str) for i in range(0, n, 2)):
-            return {items[i]: items[i + 1] for i in range(0, n, 2)}, pos
-        return items, pos
-    if tag == 0x08:
-        n = struct.unpack_from("<H", buf, pos + 1)[0]
-        return buf[pos + 3 : pos + 3 + n].decode("utf-8", errors="replace"), pos + 3 + n
-    if tag in TLV_NUM:
-        fmt, size = TLV_NUM[tag]
-        return struct.unpack_from(fmt, buf, pos + 1)[0], pos + 1 + size
-    if tag in TLV_LIT:
-        return TLV_LIT[tag], pos + 1
-    raise PayloadError(f"unknown TLV tag {tag:#x} at {pos}")
+    return tlv_body(buf[pos], buf, pos + 1)
 
 
 def cell(buf: bytes, pos: int):
-    """One row cell: u8 field id, u8 type (bool 0/1, numbers by width, 0x20 str, 0x24/0x28 TLV sequence)."""
+    """One row cell: u8 field id, u8 type, value. type = (TLV tag << 2) | bit 0 = field id + 256."""
     fid, t = buf[pos], buf[pos + 1]
-    body = pos + 2
-    if t in (0x00, 0x01):
-        return fid, t == 1, body
-    if t in CELL_NUM:
-        fmt, size = CELL_NUM[t]
-        return fid, struct.unpack_from(fmt, buf, body)[0], body + size
-    if t == 0x20:
-        n = struct.unpack_from("<H", buf, body)[0]
-        return fid, buf[body + 2 : body + 2 + n].decode("utf-8", errors="replace"), body + 2 + n
-    if t in (0x24, 0x28):
-        n = struct.unpack_from("<H", buf, body)[0]
-        pos = body + 2
-        items = []
-        for _ in range(n):
-            v, pos = tlv(buf, pos)
-            items.append(v)
-        return fid, items, pos
-    raise PayloadError(f"unknown cell type {t:#x} at {pos}")
+    if t & 2:
+        raise PayloadError(f"unknown cell type {t:#x} at {pos}")
+    value, pos = tlv_body(t >> 2, buf, pos + 2)
+    return fid | ((t & 1) << 8), value, pos
 
 
 def decode_value(seg: bytes, fields: list[str], bare: bool):
