@@ -92,7 +92,13 @@ UI is Cocos Studio: `UIScript/*.csb` widget trees (FlatBuffers, stock `CSParseBi
 `ProjectNodeOptions` override vector and a `Splendor` shader-effect node), `UIScript/plist/*.plist`
 sprite atlases, `SpineNode` for Spine animations. Asset paths inside csb/Lua payloads are cleartext,
 so hashing them (MurmurHash3-32 + tail signature, `docs/file-id.md`) names index entries.
-Atlas textures themselves are not addressed by readable paths (GUID keys, see `docs/resource-names.md`).
+Atlas textures are GUID-keyed; the repository maps `ui/<name>_0_0_ui` to them (below).
+
+### Resource repository (names → GUIDs)
+Engine resources live at `xx/<guid>[.6]` (`xx` = first two characters of the GUID; `.6` = texture). Two
+files hold the catalogue: a names file (folders, type names, index roots, block table) and a data file
+(index pages plus LZ4 blocks of 64 records: GUID, name, folder, type, dependency GUIDs). 1.38 M records;
+`tools/wwm_repository.py` dumps them with file ids. Layout: `docs/resource-names.md`.
 
 ### Lua
 Scripts are `LuaText` blobs: `u32 decoded_size` + raw LZ4 block → stock Lua 5.4 chunk whose opcode
@@ -138,6 +144,7 @@ See `docs/chat-markup.md` (tag grammar, components, colour codes, emotes).
 - `tools/wwm_lua.py` — Lua bytecode dump (LuaText → stock 5.4 → optional unluac); `tools/unluac-messiah.patch`
 - `tools/wwm_hd.py` — HD store data tables (MANIFEST/index/data) + locale text
 - `tools/wwm_texture_index.py` — header-only texture census
+- `tools/wwm_repository.py` — resource repository: name ↔ GUID ↔ file id, types, dependencies
 - `tools/wwm_patch_override.py` — experimental: replace one VFS file, either through a `Patch.mpkdb` entry or
   `--in-place` in its pack; EZST/ZSTD entries are re-compressed (in place: to the exact stored size),
   everything is journalled; `--revert` restores one file, `--revert-all` every override of the install. Confirmed in game (lite install): in place, a raw

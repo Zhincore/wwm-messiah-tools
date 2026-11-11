@@ -27,8 +27,8 @@ last character on top. Read as little-endian bytes on disk: `len, c[n-3], c[n-2]
 ## lo32: GUID fast path
 When the stripped path is 39 or 41 bytes long and byte 2 is `/` (shape `xx/<36-char GUID>`,
 optionally with a two-character suffix), `lo32` is the big-endian u32 of bytes 3..6, i.e. the first
-four characters after `xx/`. No readable GUID-shaped path has been seen in any payload so far, so
-this branch is unverified against data (see `resource-names.md`).
+four characters after `xx/`. Verified: `xx` is the first two characters of the GUID, the GUID is
+lowercase with dashes, and the optional suffix is `.6` or `.1` (see `resource-names.md`).
 
 ## Encodings of the same id
 | Where | Form |
@@ -44,5 +44,5 @@ this branch is unverified against data (see `resource-names.md`).
   All 53k script entries are named this way.
 - Cocos UI, animations, video, audio events: paths appear in clear text inside csb, Lua and JSON
   payloads; `tools/wwm_harvest_paths.py` harvests and hashes them.
-- Textures, meshes, materials and other engine resources are GUID-keyed; the name to GUID repository
-  is not decoded (`resource-names.md`).
+- Textures, meshes, materials and other engine resources are GUID-keyed; the repository names them
+  (`resource-names.md`, `tools/wwm_repository.py`).

@@ -10,6 +10,7 @@ Tools for Where Winds Meet (Messiah engine) asset packs. Format details: `README
 - `tools/wwm_csb.py`, `tools/wwm_ui_map.py`, `tools/wwm_atlas.py` — Cocos UI: csb decode, UI map, atlas frame cutting
 - `tools/wwm_lua.py` — LuaText → stock Lua 5.4 bytecode (+ unluac; needs `tools/unluac-messiah.patch`)
 - `tools/wwm_hd.py` — HD store data tables: `Store.table(name)`, `Locale` text ids; `--list/--table/--dump`
+- `tools/wwm_repository.py` — resource repository: `Repository.records()`, `guid_file_id()`; names for GUID-keyed files
 - `tools/wwm_patch_override.py` — writes to the install (patch pack + `Patch.mpkdb` row); only run when the user asks, game closed
 - `mpk/` — Rust: v3 `.mpkinfo` parser (`v3_parser.rs`), legacy v1 reader
 - `texture/` — Rust: `ezst`, `container`, `convert` (PNG via texture2ddecoder, DDS DX10); CLI converts payload files
