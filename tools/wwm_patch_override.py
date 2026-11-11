@@ -11,6 +11,11 @@ Usage:
   wwm_patch_override.py <install_root> <vfs_path> <replacement_file> --apply
   wwm_patch_override.py <install_root> <vfs_path> --revert
 
+Add --in-place to overwrite the file's bytes inside its base pack instead (needed for files the
+patcher opens before patch entries are registered, e.g. the login video). The replacement must not
+be larger than the original; a smaller MP4 is padded with a `free` box. The original bytes are
+saved and `--in-place --revert` writes them back.
+
 Close the game first: the tool refuses to write while wwm.exe is running here or the database
 looks in use (it cannot see a game running in a VM or on another machine that shares the disk).
 """
@@ -199,6 +204,89 @@ def revert(args: argparse.Namespace, db_path: Path, file_id: int) -> None:
     print(f"reverted. full database backup from before apply: {j['db_backup']}")
 
 
+def pad_to(data: bytes, size: int, name: str) -> bytes:
+    """Grow `data` to exactly `size` bytes; MP4 files get a trailing `free` box."""
+    gap = size - len(data)
+    if gap < 0:
+        sys.exit(f"replacement is {-gap} bytes larger than the original ({size}); in-place needs <= original")
+    if gap == 0:
+        return data
+    if not name.lower().endswith(".mp4") or gap < 8:
+        sys.exit(f"cannot pad {name}: {gap} bytes short and no padding rule for this type")
+    return data + gap.to_bytes(4, "big") + b"free" + bytes(gap - 8)
+
+
+def base_entry(install_root: Path, file_id: int):
+    wt = hp.load_tool("wwm_textures")
+    hits = [e for e in wt.collect_entries(install_root, {"res", "lt", "cache", "db"}) if e.file_id == file_id]
+    base = [e for e in hits if e.source == "res"]
+    if len(base) != 1:
+        sys.exit(f"expected one base-pack entry, found {len(base)} (all sources: {len(hits)})")
+    if len(hits) > 1:
+        print(f"note: {len(hits) - 1} patch entry(ies) also exist for this file and take precedence once registered")
+    return base[0]
+
+
+def inplace_journal(backup_dir: Path, file_id: int) -> Path:
+    return backup_dir / f"{file_id:016x}.inplace.json"
+
+
+def apply_inplace(args: argparse.Namespace, db_path: Path, file_id: int) -> None:
+    entry = base_entry(args.install_root, file_id)
+    with open(entry.container, "rb") as f:
+        f.seek(entry.offset)
+        original = f.read(entry.size)
+    if original[:4] in (b"EZST", b"ZSTD"):
+        sys.exit("the stored file is an EZST block; in-place replacement of compressed entries is not supported")
+    data = pad_to(Path(args.replacement).read_bytes(), entry.size, args.vfs_path)
+    journal = inplace_journal(args.backup_dir, file_id)
+    print(f"file id      {file_id:016x} ({args.vfs_path})")
+    print(f"target       {entry.container} offset {entry.offset} size {entry.size}")
+    print(f"original     content hash {content_hash(original):016x}")
+    print(f"replacement  {args.replacement} padded to {len(data)} bytes, content hash {content_hash(data):016x}")
+    if journal.exists():
+        sys.exit(f"an in-place override for this file is already journalled ({journal}); revert it first")
+    if not args.apply:
+        print("dry run: nothing written (add --apply)")
+        return
+    refuse_if_in_use(db_path, args.force)
+    args.backup_dir.mkdir(parents=True, exist_ok=True)
+    saved = args.backup_dir / f"{file_id:016x}.original"
+    saved.write_bytes(original)
+    journal.write_text(json.dumps({
+        "vfs_path": args.vfs_path, "file_id": file_id, "container": entry.container, "offset": entry.offset,
+        "size": entry.size, "original": str(saved), "original_hash": content_hash(original),
+    }, indent=1))
+    with open(entry.container, "r+b") as f:
+        f.seek(entry.offset)
+        f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
+    with open(entry.container, "rb") as f:
+        f.seek(entry.offset)
+        if f.read(entry.size) != data:
+            sys.exit("verification failed: pack bytes differ from the replacement; run --in-place --revert")
+    print(f"applied in place. original bytes: {saved}\njournal: {journal}")
+
+
+def revert_inplace(args: argparse.Namespace, db_path: Path, file_id: int) -> None:
+    journal = inplace_journal(args.backup_dir, file_id)
+    if not journal.exists():
+        sys.exit(f"no in-place journal for {file_id:016x} in {args.backup_dir}")
+    j = json.loads(journal.read_text())
+    refuse_if_in_use(db_path, args.force)
+    original = Path(j["original"]).read_bytes()
+    if len(original) != j["size"] or content_hash(original) != j["original_hash"]:
+        sys.exit("saved original does not match the journal; not writing")
+    with open(j["container"], "r+b") as f:
+        f.seek(j["offset"])
+        f.write(original)
+        f.flush()
+        os.fsync(f.fileno())
+    journal.rename(journal.with_suffix(".reverted.json"))
+    print(f"restored {j['size']} original bytes at {j['container']}:{j['offset']}")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("install_root", type=Path)
@@ -206,6 +294,7 @@ def main() -> None:
     ap.add_argument("replacement", nargs="?")
     ap.add_argument("--apply", action="store_true", help="write the pack bytes and the database row")
     ap.add_argument("--revert", action="store_true", help="undo a previous --apply for this path")
+    ap.add_argument("--in-place", action="store_true", help="overwrite the bytes in the base pack instead")
     ap.add_argument("--pack", type=int, help="patch pack number to append to (default: an empty one)")
     ap.add_argument("--backup-dir", type=Path, default=DEFAULT_BACKUP_DIR)
     ap.add_argument("--force", action="store_true", help="skip the game-running and database-in-use checks")
@@ -217,7 +306,9 @@ def main() -> None:
         sys.exit(f"not found: {db_path}")
     file_id = hp.file_id(args.vfs_path)
     if args.revert:
-        revert(args, db_path, file_id)
+        (revert_inplace if args.in_place else revert)(args, db_path, file_id)
+    elif args.replacement and args.in_place:
+        apply_inplace(args, db_path, file_id)
     elif args.replacement:
         apply(args, patch_dir, db_path, file_id)
     else:
