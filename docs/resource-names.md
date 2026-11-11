@@ -3,7 +3,8 @@
 Engine resources (textures, meshes, materials, models, particle systems, ...) are stored under
 GUID paths, so their file ids cannot be guessed from a readable name. The engine's repository maps
 names to GUIDs. Decoder: `tools/wwm_repository.py`. Verified on a Steam global build: 1,376,051 of
-1,376,052 records resolve to a file in the install.
+1,376,052 records resolve to an indexed file, and a texture identified earlier by its pixels (the chat
+emote atlas) comes out under its name with the same file id.
 
 ## GUID paths
 ```
@@ -29,7 +30,7 @@ sections: u8 id, u32 length, payload
 |---|---|
 | 0 | folders: `u16 0xFFFF, u32 length`, then `;`-separated folder paths (30k) |
 | 1 | types: `u16 length`, then `;`-separated type names (below) |
-| 2 | GUID index: root and page table |
+| 2 | a second index, key unknown: root and page table |
 | 3 | name index: root and page table |
 | 4 | record blocks: `u16 count`, then `count × (u32 stored_size, u32 offset)` into the data file |
 | 5, 6 | bitmaps (16 KiB each; allocation maps, not needed for reading) |
@@ -45,8 +46,9 @@ Index section: `u16 n`, `n × u64` first key of each leaf page, `u16 pages`,
 
 Index keys:
 - name index: `file_id("<folder>/<name>")`, the same function as VFS ids (`file-id.md`).
-- GUID index: 64-bit, one per record, function unknown. Not MurmurHash3, xxHash, FNV, CRC or MD5 of
-  the raw, mixed-endian or string GUID, nor a slice of it.
+- section 2 index: 64-bit, one per record, function unknown (presumably derived from the GUID, not
+  shown). Not MurmurHash3, xxHash, FNV, CRC or MD5 of the raw, mixed-endian or string GUID, nor a
+  slice of it, nor any of those over the name.
 
 ### Record
 ```
@@ -81,8 +83,9 @@ Puppet.
 .venv/bin/python tools/wwm_repository.py <install> --find '^puppet/vx_emoji_goose'
 .venv/bin/python tools/wwm_repository.py <install> --deps ui/dynamic_l_talk_emotion__0_0_ui
 ```
-The CSV has `file_id, ext, guid, type, path, kind, variant, deps`; `file_id` is empty when the
-install does not hold the file (lite installs).
+The CSV has `file_id, ext, guid, type, path, kind, variant, deps`; `file_id` is empty when no index
+of the install lists the file. Listed is not the same as present: a lite install indexes files whose
+bytes it has not downloaded.
 
 ## Related blobs, not part of the repository
 - UI texture list: `u16 length + "ui/<name>_0_0_ui"`, then `u16 width + 4, u16 height + 4` per entry

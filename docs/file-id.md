@@ -25,10 +25,12 @@ So the low byte is the length (mod 256) and the upper three bytes are the last t
 last character on top. Read as little-endian bytes on disk: `len, c[n-3], c[n-2], c[n-1]`.
 
 ## lo32: GUID fast path
-When the stripped path is 39 or 41 bytes long and byte 2 is `/` (shape `xx/<36-char GUID>`,
-optionally with a two-character suffix), `lo32` is the big-endian u32 of bytes 3..6, i.e. the first
-four characters after `xx/`. Verified: `xx` is the first two characters of the GUID, the GUID is
-lowercase with dashes, and the optional suffix is `.6` or `.1` (see `resource-names.md`).
+When the stripped path is 39 or 41 bytes long and byte 2 is `/`, `lo32` is the big-endian u32 of
+bytes 3..6, i.e. the first four characters after `xx/`. Every real path seen has the 39-byte shape
+`xx/<36-char GUID>`: `xx` is the first two characters of the GUID, the GUID is lowercase with dashes,
+and the extension is absent, `.6` or `.1` (see `resource-names.md`). The 41-byte case has not been
+observed, and whether the engine tests the length before or after stripping the extension is open
+(both give the same result for these paths).
 
 ## Encodings of the same id
 | Where | Form |

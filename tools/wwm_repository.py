@@ -11,7 +11,7 @@ Two VFS files, found here by content, share the same path stem (same lo32 tail s
   names file   u32 1, u32 0, u32 record_count, u8 section_count, then sections `u8 id, u32 length, payload`:
                  0  folders:    u16 0xFFFF, u32 length, ';'-separated folder paths
                  1  types:      u16 length, ';'-separated type names (Texture2D, LodModel, Material, ...)
-                 2  GUID index: root + page table (key function unknown)
+                 2  index with an unknown key function: root + page table
                  3  name index: root + page table; key = file_id("<folder>/<name>")
                  4  blocks:     u16 count, count x (u32 stored_size, u32 offset) into the data file
                  5, 6  bitmaps
@@ -51,7 +51,8 @@ wt = hp.load_tool("wwm_textures")
 MIN_DATA_SIZE = 1 << 20
 HEX_DIGITS = frozenset(b"0123456789abcdef")
 GUID_EXTENSIONS = ("", ".6", ".1")
-SECTION_FOLDERS, SECTION_TYPES, SECTION_GUID_INDEX, SECTION_NAME_INDEX, SECTION_BLOCKS = range(5)
+SECTION_FOLDERS, SECTION_TYPES, SECTION_UNKNOWN_INDEX, SECTION_NAME_INDEX, SECTION_BLOCKS = range(5)
+SOURCE_PRIORITY = {"db1": 0, "db0": 1, "res": 2, "lt": 2, "cache": 3}
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,10 +81,19 @@ def guid_file_id(guid: bytes | str, ext: str = "") -> int:
     return (mmh3.hash(path, 0, signed=False) << 32) | struct.unpack(">I", path[3:7])[0]
 
 
-def read_entry(entry, size: int | None = None) -> bytes:
-    with open(entry.container, "rb") as f:
+def read_entry(entry, size: int | None = None, handles: dict | None = None) -> bytes:
+    """Stored bytes of an entry (decoded when whole); `handles` keeps one open file per container."""
+    f = handles.get(entry.container) if handles is not None else None
+    if f is None:
+        f = open(entry.container, "rb")
+        if handles is not None:
+            handles[entry.container] = f
+    try:
         f.seek(entry.offset)
         raw = f.read(entry.size if size is None else min(size, entry.size))
+    finally:
+        if handles is None:
+            f.close()
     return wt.ezst_decode(raw) if size is None and raw[:4] in (b"EZST", b"ZSTD") else raw
 
 
@@ -92,22 +102,35 @@ def is_names_file(head: bytes) -> bool:
 
 
 def locate(entries: list) -> tuple:
-    """(names entry, data entry): a names-file signature plus a larger sibling with the same lo32."""
-    by_lo = defaultdict(list)
+    """
+    (names entry, data entry): a names-file signature plus a larger sibling with the same lo32.
+    A file indexed more than once is taken from the source the engine prefers.
+    """
+    best = {}
     for e in entries:
         lo = e.file_id & 0xFFFFFFFF
-        if not HEX_DIGITS.issuperset(lo.to_bytes(4, "big")):  # GUID-keyed files are never the repository
-            by_lo[lo].append(e)
-    for group in by_lo.values():
-        big = [e for e in group if e.size >= MIN_DATA_SIZE]
-        if len(group) < 2 or not big:
+        if HEX_DIGITS.issuperset(lo.to_bytes(4, "big")):  # GUID-keyed files are never the repository
             continue
-        for names in group:
-            if not is_names_file(read_entry(names, 20)):
+        old = best.get(e.file_id)
+        if old is None or SOURCE_PRIORITY.get(e.source, 9) < SOURCE_PRIORITY.get(old.source, 9):
+            best[e.file_id] = e
+    by_lo = defaultdict(list)
+    for e in best.values():
+        by_lo[e.file_id & 0xFFFFFFFF].append(e)
+    handles: dict = {}
+    try:
+        for group in by_lo.values():
+            if len(group) < 2 or max(e.size for e in group) < MIN_DATA_SIZE:
                 continue
-            data = max((e for e in big if e.file_id != names.file_id), key=lambda e: e.size, default=None)
-            if data is not None:
-                return names, data
+            for names in group:
+                if not is_names_file(read_entry(names, 20, handles)):
+                    continue
+                data = max((e for e in group if e.file_id != names.file_id), key=lambda e: e.size)
+                if data.size >= MIN_DATA_SIZE:
+                    return names, data
+    finally:
+        for f in handles.values():
+            f.close()
     raise SystemExit("repository not found in this install")
 
 
@@ -136,6 +159,8 @@ class Repository:
         blocks = sections[SECTION_BLOCKS]
         n = struct.unpack_from("<H", blocks, 0)[0]
         self.blocks = [struct.unpack_from("<II", blocks, 2 + 8 * i) for i in range(n)]
+        if any(offset + stored > len(data) for stored, offset in self.blocks):
+            raise ValueError("block table does not fit the data file (names and data from different builds?)")
 
     @classmethod
     def from_entries(cls, entries: list) -> "Repository":
@@ -164,7 +189,7 @@ class Repository:
 
 
 def resolve(record: Record, ids: set[int]) -> tuple[int | None, str]:
-    """(file id, extension) of the record's file when the install has it."""
+    """(file id, extension) of the record's file when an index of the install lists it."""
     for ext in GUID_EXTENSIONS:
         fid = guid_file_id(record.guid, ext)
         if fid in ids:
@@ -190,10 +215,14 @@ def main() -> None:
         with open(args.out, "w", newline="") as f:
             w = csv.writer(f)
             w.writerow(["file_id", "ext", "guid", "type", "path", "kind", "variant", "deps"])
+            written = 0
             for r in repo.records():
+                written += 1
                 fid, ext = resolve(r, ids)
                 deps = " ".join(str(uuid.UUID(bytes=d)) for d in r.deps)
                 w.writerow([f"{fid:016x}" if fid is not None else "", ext, r.guid_str, r.type, r.path, r.kind, r.variant, deps])
+        if written != repo.count:
+            print(f"warning: decoded {written} records, header says {repo.count}", file=sys.stderr)
     if args.find:
         pattern = re.compile(args.find)
         for r in repo.records():

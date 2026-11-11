@@ -159,7 +159,7 @@ See `docs/chat-markup.md` (tag grammar, components, colour codes, emotes).
 
 ## Credits
 - Alexander Guettler — original netease-messiah-tools (MIT)
-- [ArArgon/yysls-re](https://github.com/ArArgon/yysls-re) — EZST key, file-id hash, VFS model, `Patch.mpkdb` semantics, Lua opcode table (everything this repo relies on is restated in `docs/`)
+- [ArArgon/yysls-re](https://github.com/ArArgon/yysls-re) — EZST key, file-id hash, VFS model, `Patch.mpkdb` semantics, Lua opcode table (the parts this repo's tools rely on are restated in `docs/`)
 - ResHax community threads on WWM `.mpk` analysis
 
 Research/educational use only. Respect the game's terms of service.
