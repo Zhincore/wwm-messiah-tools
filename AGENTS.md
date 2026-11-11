@@ -1,7 +1,7 @@
 # wwm-messiah-tools — agent notes
 
-Tools for Where Winds Meet (Messiah engine) asset packs. Format details: `README.md`.
-External reference for anything not covered there: https://github.com/ArArgon/yysls-re (docs/).
+Tools for Where Winds Meet (Messiah engine) asset packs. Format details: `README.md` and `docs/`
+(self-contained; record new findings there). Secondary reference: https://github.com/ArArgon/yysls-re (docs/).
 
 ## Layout
 - `tools/wwm_textures.py` — texture/image extractor; also home of `Pack`, `Entry`, `collect_entries`, `ezst_decode`

@@ -1,0 +1,73 @@
+# Patch database, content hash, replacing files
+
+Format notes behind `tools/wwm_patch_override.py`. Observed on a lite install; "confirmed" means
+checked in game.
+
+## Patch.mpkdb
+`LocalData/Patch/Patch.mpkdb` is SQLite. Tables `info0` (base rows) and `info1` (appended updates)
+share one shape:
+
+| column | meaning |
+|---|---|
+| v0 | file id, **signed** i64 |
+| v1 | stored size in bytes |
+| v2 | pack number: bytes live in `Patch{v2}.mpk` |
+| v3 | content hash of the stored bytes (below), signed i64 |
+| v4, v5 | flags, 0 on ordinary rows |
+| v6 | offset inside the pack |
+
+The engine reads these rows directly. Repointing a row at other bytes (new pack, offset, size, hash)
+changes what the game loads for that id: confirmed with an EZST animation.
+
+## Content hash (v3, patchlist hash64)
+```
+chunk = 2 MiB if size >= 4 MiB else 32 MiB
+h = 0
+for each chunk c of the stored bytes:
+    a, b = MurmurHash3_x64_128(c, seed 0)    # two u64 halves
+    h ^= a ^ b
+```
+Reproduced on 20 real rows. `content_hash()` in `tools/wwm_patch_override.py`.
+
+## Start-up order
+The patcher is Lua (`LuaText/patch/...`) and runs before the game proper:
+
+1. Load stage: opens the packs and verifies the "essential" list (the `LT{n}` packs, which hold the
+   scripts).
+2. The login screen appears; its loop video is opened here.
+3. Finish stage: patch entries from `Patch.mpkdb` are registered with the engine.
+
+Consequence: a file the patcher opens before step 3 is read from its base pack whatever the database
+says. A database override of the login video has no effect; overwriting its bytes in the base pack
+does (confirmed). Per-launch verification covers the essential list only; patchlist hashes of other
+files are checked on patch and repair, so a repair restores overwritten bytes.
+
+## Stored forms
+An entry is stored raw (MP4, Wwise audio, texture containers), as `EZST`, or as `ZSTD`:
+
+```
+"EZST" u32 raw_size payload     payload[:min(floor16(len), 256)] AES-256-ECB, then one zstd frame
+"ZSTD" u32 raw_size payload     same, not encrypted
+```
+The AES key is fixed (constant in `tools/wwm_textures.py`). `ezst_encode()` builds either form.
+
+## Two ways to replace a file
+- **Database route.** Append the new stored bytes to a patch pack and insert or repoint the `info0`
+  row. No size limit; base packs untouched. Does not reach files opened before registration.
+- **In place.** Overwrite the stored bytes inside the pack. The new stored form must be exactly as
+  long as the old one, because neighbours and index offsets do not move.
+
+### Fitting an exact size
+- Raw MP4: append a `free` box of the missing length.
+- EZST/ZSTD: compress, then grow the zstd frame to the target without changing what it decodes to.
+  The frame's last block gets its last-block flag cleared and empty raw blocks (3 bytes each:
+  `00 00 00`, the final one `01 00 00`) are appended. A gap that is not a multiple of 3 is absorbed
+  by the frame header: four equivalent headers (with or without a window descriptor byte, content
+  size as u32 or u64) give lengths covering every residue modulo 3. Of 113 real EZST
+  entries re-encoded this way, 72 fit; the rest (mostly meshes) were stored tighter than zstd level
+  22 reaches and need the database route. One padded animation is confirmed in game.
+
+## Not built
+- Texture replacement: the container holds one EZST block per mip plus size fields, so it has to be
+  rebuilt, not just re-wrapped.
+- Lite "block packs" (catalogue packs made of compacted EZST blocks) are skipped by the tool.

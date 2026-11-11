@@ -2,9 +2,9 @@
 """
 Dump the game's Lua scripts: LuaText wrapper -> stock Lua 5.4 bytecode -> (optional) source.
 
-  on disk   u32le decoded_size + raw LZ4 block                (LuaText, see yysls-re lua-bytecode.md)
+  on disk   u32le decoded_size + raw LZ4 block                (LuaText)
   decoded   stock Lua 5.4 chunk with NetEase's extended opcode table
-  remapped  opcodes rewritten to stock numbering (table from ArArgon/yysls-re, messiah.lua.luac)
+  remapped  opcodes rewritten to stock numbering (table below, originally from ArArgon/yysls-re)
   source    `java -jar unluac.jar` on the remapped chunk, when a jar is given
 
 Script entries are keyed by path hash like everything else; harvested paths resolve with the

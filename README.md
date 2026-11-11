@@ -35,10 +35,11 @@ packs carry no filenames.
 `.mpkinfo` v3: `u32 3, u32 count`, then 20-byte entries `u32 id_lo, u32 id_hi, u32 offset,
 u32 size, u32 packed` (`pack_id = packed >> 1`, bit 0 = placeholder), 16-byte trailer.
 `id_lo` is a "tail signature" of the path (length byte + last 3 bytes), `id_hi` is
-MurmurHash3-32 of the path — see yysls-re `file-id.md`. Files starting with `HEX_`/`HEXB_`
+MurmurHash3-32 of the path — see `docs/file-id.md`. Files starting with `HEX_`/`HEXB_`
 are wrapped msgpack metadata, not indexes.
 
-`Patch.mpkdb`: `v0` id (i64), `v1` size, `v2` pack, `v3` content hash, `v6` offset.
+`Patch.mpkdb`: `v0` id (i64), `v1` size, `v2` pack, `v3` content hash, `v6` offset — see `docs/patching.md`
+(content hash, start-up order, replacing files).
 
 ### Block packs
 Packs that start with `EZST` hold one EZST block per index entry; `size` is the physical
@@ -90,12 +91,12 @@ with the same NetEase key, no base64/zlib (chat history, UI/red-dot state, cache
 UI is Cocos Studio: `UIScript/*.csb` widget trees (FlatBuffers, stock `CSParseBinary` schema plus a
 `ProjectNodeOptions` override vector and a `Splendor` shader-effect node), `UIScript/plist/*.plist`
 sprite atlases, `SpineNode` for Spine animations. Asset paths inside csb/Lua payloads are cleartext,
-so hashing them (MurmurHash3-32 + tail signature, see yysls-re `file-id.md`) names index entries.
-Atlas textures themselves are not addressed by readable paths (GUID keys, mapping unresolved).
+so hashing them (MurmurHash3-32 + tail signature, `docs/file-id.md`) names index entries.
+Atlas textures themselves are not addressed by readable paths (GUID keys, see `docs/resource-names.md`).
 
 ### Lua
 Scripts are `LuaText` blobs: `u32 decoded_size` + raw LZ4 block → stock Lua 5.4 chunk whose opcode
-table has 17 inserted opcodes (table from yysls-re). `tools/wwm_lua.py` unpacks, remaps to stock
+table has 17 inserted opcodes (table in `tools/wwm_lua.py`). `tools/wwm_lua.py` unpacks, remaps to stock
 numbering and writes `.luac` named from the chunk's `source` field (`hexm/...`, `Sunshine/...`);
 pass `--unluac unluac.jar` to decompile to `.lua`. Differences from stock 5.4 that a decompiler must
 know: `MMBIN*` C operand is the metamethod index + 1 (not an opcode), generic `for` reserves 5 internal
@@ -104,7 +105,7 @@ registers, `NEWTABLE` variants have no `EXTRAARG`. `tools/unluac-messiah.patch` 
 
 ### Data tables (HD store)
 `Package/HD/<region>/`: `MANIFEST`, `index{n}`, `data{n}` hold ~114k named tables (`MTable`), read by
-`tools/wwm_hd.py`. All three are `0xDEADBEEF` containers of zstd blocks.
+`tools/wwm_hd.py`. All three are `0xDEADBEEF` containers of zstd blocks. Full layout: `docs/hd-store.md`.
 - MANIFEST: table names + 32-byte records `rows, shard_count, schema_ptr, patch_schema_ptr, hash, 0,
   first_shard, kind`, then a shard array of `(ptr, patch_ptr)`; `ptr = (block << 16) | index file number`.
 - Schema block: field-name list; a cell's field id is its position.
@@ -143,7 +144,7 @@ See `docs/chat-markup.md` (tag grammar, components, colour codes, emotes).
   MP4 (login video) and an EZST animation padded with empty zstd blocks; through `Patch.mpkdb`, an EZST
   animation whose existing row was repointed. Files the patcher opens before it registers patch entries
   (the login video) only respond to the in-place route.
-- `docs/chat-markup.md` — rich-text markup reference
+- `docs/` — format notes: `file-id.md`, `hd-store.md`, `patching.md`, `resource-names.md`, `chat-markup.md`
 - `mpk/` — Rust: v1 reader (Diablo Immortal era) and v3 `.mpkinfo` parser
 - `texture/` — Rust: EZST codec, texture container parser, PNG/DDS conversion
   (`cargo run -p messiah-texture -- <payload files or dir> -o OUT [--dds]`)
@@ -151,7 +152,7 @@ See `docs/chat-markup.md` (tag grammar, components, colour codes, emotes).
 
 ## Credits
 - Alexander Guettler — original netease-messiah-tools (MIT)
-- [ArArgon/yysls-re](https://github.com/ArArgon/yysls-re) — EZST key, file-id hash, VFS model, `Patch.mpkdb` semantics
+- [ArArgon/yysls-re](https://github.com/ArArgon/yysls-re) — EZST key, file-id hash, VFS model, `Patch.mpkdb` semantics, Lua opcode table (everything this repo relies on is restated in `docs/`)
 - ResHax community threads on WWM `.mpk` analysis
 
 Research/educational use only. Respect the game's terms of service.
