@@ -10,6 +10,7 @@ Usage:
   wwm_patch_override.py <install_root> <vfs_path> <replacement_file>            dry run
   wwm_patch_override.py <install_root> <vfs_path> <replacement_file> --apply
   wwm_patch_override.py <install_root> <vfs_path> --revert
+  wwm_patch_override.py <install_root> --revert-all                             undo every override, newest first
 
 Add --in-place to overwrite the file's stored bytes inside its pack instead (needed for files the
 patcher opens before patch entries are registered, e.g. the login video). The stored replacement
@@ -185,10 +186,9 @@ def apply(args: argparse.Namespace, patch_dir: Path, db_path: Path, file_id: int
     print(f"applied. database backup: {db_backup}\njournal: {journal}")
 
 
-def revert(args: argparse.Namespace, db_path: Path, file_id: int) -> None:
-    journal = journal_path(args.backup_dir, file_id)
+def revert(args: argparse.Namespace, db_path: Path, journal: Path) -> None:
     if not journal.exists():
-        sys.exit(f"no journal for {file_id:016x} in {args.backup_dir}")
+        sys.exit(f"no journal {journal}")
     j = json.loads(journal.read_text())
     refuse_if_in_use(db_path, args.force)
     row, pack = j["row"], Path(j["pack"])
@@ -327,10 +327,9 @@ def apply_inplace(args: argparse.Namespace, db_path: Path, file_id: int) -> None
     print(f"applied in place. original bytes: {saved}\njournal: {journal}")
 
 
-def revert_inplace(args: argparse.Namespace, db_path: Path, file_id: int) -> None:
-    journal = inplace_journal(args.backup_dir, file_id)
+def revert_inplace(args: argparse.Namespace, db_path: Path, journal: Path) -> None:
     if not journal.exists():
-        sys.exit(f"no in-place journal for {file_id:016x} in {args.backup_dir}")
+        sys.exit(f"no in-place journal {journal}")
     j = json.loads(journal.read_text())
     refuse_if_in_use(db_path, args.force)
     original = Path(j["original"]).read_bytes()
@@ -345,13 +344,35 @@ def revert_inplace(args: argparse.Namespace, db_path: Path, file_id: int) -> Non
     print(f"restored {j['size']} original bytes at {j['container']}:{j['offset']}")
 
 
+def revert_all(args: argparse.Namespace, db_path: Path) -> None:
+    """Revert every active journal that targets this install, newest first so pack tails unwind in order."""
+    root = args.install_root.resolve()
+    active = []
+    for journal in args.backup_dir.glob("*.json"):
+        if journal.name.endswith(".reverted.json"):
+            continue
+        j = json.loads(journal.read_text())
+        if Path(j.get("container") or j["pack"]).resolve().is_relative_to(root):
+            active.append((journal.stat().st_mtime, journal, j))
+    if not active:
+        print(f"no active overrides for {root} in {args.backup_dir}")
+        return
+    refuse_if_in_use(db_path, args.force)
+    for _, journal, j in sorted(active, key=lambda a: a[0], reverse=True):
+        in_place = "container" in j
+        print(f"-- {j['vfs_path']} ({'in place' if in_place else 'database'})")
+        (revert_inplace if in_place else revert)(args, db_path, journal)
+    print(f"reverted {len(active)} override(s)")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("install_root", type=Path)
-    ap.add_argument("vfs_path", help="path inside the VFS, e.g. Video/login_loop_201.mp4")
+    ap.add_argument("vfs_path", nargs="?", help="path inside the VFS, e.g. Video/login_loop_201.mp4")
     ap.add_argument("replacement", nargs="?")
     ap.add_argument("--apply", action="store_true", help="write the pack bytes and the database row")
     ap.add_argument("--revert", action="store_true", help="undo a previous --apply for this path")
+    ap.add_argument("--revert-all", action="store_true", help="undo every journalled override of this install")
     ap.add_argument("--in-place", action="store_true", help="overwrite the bytes in the base pack instead")
     ap.add_argument("--source", choices=sorted(SOURCE_PRIORITY), help="index source of the entry to overwrite in place")
     ap.add_argument("--stored", action="store_true", help="replacement file is already in stored form; write it as is")
@@ -365,9 +386,17 @@ def main() -> None:
     db_path = patch_dir / "Patch.mpkdb"
     if not db_path.exists():
         sys.exit(f"not found: {db_path}")
+    if args.revert_all:
+        if args.vfs_path:
+            ap.error("--revert-all takes no path")
+        return revert_all(args, db_path)
+    if not args.vfs_path:
+        ap.error("need a vfs path or --revert-all")
     file_id = parse_file_id(args.vfs_path)
-    if args.revert:
-        (revert_inplace if args.in_place else revert)(args, db_path, file_id)
+    if args.revert and args.in_place:
+        revert_inplace(args, db_path, inplace_journal(args.backup_dir, file_id))
+    elif args.revert:
+        revert(args, db_path, journal_path(args.backup_dir, file_id))
     elif args.replacement and args.in_place:
         apply_inplace(args, db_path, file_id)
     elif args.replacement:
