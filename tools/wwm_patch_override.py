@@ -11,10 +11,16 @@ Usage:
   wwm_patch_override.py <install_root> <vfs_path> <replacement_file> --apply
   wwm_patch_override.py <install_root> <vfs_path> --revert
 
-Add --in-place to overwrite the file's bytes inside its base pack instead (needed for files the
-patcher opens before patch entries are registered, e.g. the login video). The replacement must not
-be larger than the original; a smaller MP4 is padded with a `free` box. The original bytes are
-saved and `--in-place --revert` writes them back.
+Add --in-place to overwrite the file's stored bytes inside its pack instead (needed for files the
+patcher opens before patch entries are registered, e.g. the login video). The stored replacement
+must not be larger than the original. The original bytes are saved and `--in-place --revert`
+writes them back.
+
+The replacement file is the *decoded* content. It is stored the way the original entry is:
+EZST (zstd + AES prefix) and ZSTD entries are re-compressed, in place to exactly the original
+stored size; raw entries are written as is (a smaller MP4 is padded with a `free` box).
+Pass --stored when the replacement file already is the stored form.
+<vfs_path> may also be `id:<16 hex digits>` for files known only by id (GUID-keyed textures).
 
 Close the game first: the tool refuses to write while wwm.exe is running here or the database
 looks in use (it cannot see a game running in a VM or on another machine that shares the disk).
@@ -42,6 +48,7 @@ SMALL_FILE = 4 << 20
 CHUNK_LARGE_FILE = 2 << 20
 CHUNK_SMALL_FILE = 32 << 20
 USER_PACK_LIMIT = 1000
+ZSTD_MAX_LEVEL = 22
 DEFAULT_BACKUP_DIR = Path.home() / ".local/share/wwm-messiah-tools/overrides"
 
 
@@ -125,7 +132,11 @@ def journal_path(backup_dir: Path, file_id: int) -> Path:
 
 
 def apply(args: argparse.Namespace, patch_dir: Path, db_path: Path, file_id: int) -> None:
-    data = Path(args.replacement).read_bytes()
+    existing = find_entries(args.install_root, file_id)
+    wrapper = wrapper_of(read_stored(existing[0])) if existing else None
+    if not existing:
+        print("note: file not found in any index; storing the replacement raw")
+    data = stored_form(args, wrapper, None)
     with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as ro:
         pack_no = args.pack if args.pack is not None else pick_pack(patch_dir, ro)
     pack = patch_dir / f"Patch{pack_no}.mpk"
@@ -135,7 +146,7 @@ def apply(args: argparse.Namespace, patch_dir: Path, db_path: Path, file_id: int
     journal = journal_path(args.backup_dir, file_id)
 
     print(f"file id      {file_id:016x} ({args.vfs_path})")
-    print(f"replacement  {args.replacement} ({len(data)} bytes, content hash {chash:016x})")
+    print(f"replacement  {args.replacement} stored {(wrapper or b'raw').decode()}, {len(data)} bytes, content hash {chash:016x}")
     print(f"pack         {pack} (append at offset {offset})")
     print(f"info0 row    {row}")
     if journal.exists():
@@ -204,27 +215,70 @@ def revert(args: argparse.Namespace, db_path: Path, file_id: int) -> None:
     print(f"reverted. full database backup from before apply: {j['db_backup']}")
 
 
-def pad_to(data: bytes, size: int, name: str) -> bytes:
-    """Grow `data` to exactly `size` bytes; MP4 files get a trailing `free` box."""
+WRAPPERS = (b"EZST", b"ZSTD")
+SOURCE_PRIORITY = {"db1": 0, "db0": 1, "res": 2, "lt": 2, "cache": 3}
+
+
+def parse_file_id(vfs_path: str) -> int:
+    m = re.fullmatch(r"id:([0-9a-fA-F]{16})", vfs_path)
+    return int(m.group(1), 16) if m else hp.file_id(vfs_path)
+
+
+def pad_raw(data: bytes, size: int, name: str) -> bytes:
+    """Grow raw `data` to exactly `size` bytes; MP4 files get a trailing `free` box."""
     gap = size - len(data)
-    if gap < 0:
-        sys.exit(f"replacement is {-gap} bytes larger than the original ({size}); in-place needs <= original")
     if gap == 0:
         return data
+    if gap < 0:
+        sys.exit(f"replacement is {-gap} bytes larger than the original ({size}); in-place needs <= original")
     if not name.lower().endswith(".mp4") or gap < 8:
         sys.exit(f"cannot pad {name}: {gap} bytes short and no padding rule for this type")
     return data + gap.to_bytes(4, "big") + b"free" + bytes(gap - 8)
 
 
-def base_entry(install_root: Path, file_id: int):
+def stored_form(args: argparse.Namespace, wrapper: bytes | None, size: int | None) -> bytes:
+    """Replacement bytes as they go into the pack: wrapped like the original, `size` bytes if given."""
+    data = Path(args.replacement).read_bytes()
+    if args.stored or wrapper not in WRAPPERS:
+        return data if size is None else pad_raw(data, size, args.vfs_path)
+    wt = hp.load_tool("wwm_textures")
+    block, error = None, None
+    for level in dict.fromkeys((args.level, ZSTD_MAX_LEVEL)):
+        try:
+            block = wt.ezst_encode(data, wrapper, size, level)
+            break
+        except ValueError as e:
+            error = e
+    if block is None:
+        sys.exit(f"{error}; the compressed replacement does not fit the original stored size")
+    if wt.ezst_decode(block) != data:
+        sys.exit("internal error: re-wrapped block does not decode back to the replacement")
+    return block
+
+
+def find_entries(install_root: Path, file_id: int) -> list:
+    """Index entries for this file with usable physical offsets, the one the engine prefers first."""
     wt = hp.load_tool("wwm_textures")
     hits = [e for e in wt.collect_entries(install_root, {"res", "lt", "cache", "db"}) if e.file_id == file_id]
-    base = [e for e in hits if e.source == "res"]
-    if len(base) != 1:
-        sys.exit(f"expected one base-pack entry, found {len(base)} (all sources: {len(hits)})")
-    if len(hits) > 1:
-        print(f"note: {len(hits) - 1} patch entry(ies) also exist for this file and take precedence once registered")
-    return base[0]
+    usable = []
+    for e in hits:
+        if e.source == "cache" and not os.path.exists(e.container):
+            continue
+        if e.source == "cache" and wt.Pack(e.container).blocks is not None:
+            print(f"note: skipping {e.container} (block pack without physical offsets)")
+            continue
+        usable.append(e)
+    return sorted(usable, key=lambda e: SOURCE_PRIORITY.get(e.source, 9))
+
+
+def read_stored(entry) -> bytes:
+    with open(entry.container, "rb") as f:
+        f.seek(entry.offset)
+        return f.read(entry.size)
+
+
+def wrapper_of(stored: bytes) -> bytes | None:
+    return stored[:4] if stored[:4] in WRAPPERS else None
 
 
 def inplace_journal(backup_dir: Path, file_id: int) -> Path:
@@ -232,18 +286,22 @@ def inplace_journal(backup_dir: Path, file_id: int) -> Path:
 
 
 def apply_inplace(args: argparse.Namespace, db_path: Path, file_id: int) -> None:
-    entry = base_entry(args.install_root, file_id)
-    with open(entry.container, "rb") as f:
-        f.seek(entry.offset)
-        original = f.read(entry.size)
-    if original[:4] in (b"EZST", b"ZSTD"):
-        sys.exit("the stored file is an EZST block; in-place replacement of compressed entries is not supported")
-    data = pad_to(Path(args.replacement).read_bytes(), entry.size, args.vfs_path)
+    entries = find_entries(args.install_root, file_id)
+    if args.source:
+        entries = [e for e in entries if e.source == args.source]
+    if not entries:
+        sys.exit("no index entry with physical offsets found for this file")
+    entry = entries[0]
+    for other in entries[1:]:
+        print(f"note: another entry exists in {other.container} ({other.source}); pick it with --source {other.source}")
+    original = read_stored(entry)
+    data = stored_form(args, wrapper_of(original), entry.size)
     journal = inplace_journal(args.backup_dir, file_id)
     print(f"file id      {file_id:016x} ({args.vfs_path})")
     print(f"target       {entry.container} offset {entry.offset} size {entry.size}")
     print(f"original     content hash {content_hash(original):016x}")
-    print(f"replacement  {args.replacement} padded to {len(data)} bytes, content hash {content_hash(data):016x}")
+    print(f"stored as    {(wrapper_of(original) or b'raw').decode()} ({entry.source})")
+    print(f"replacement  {args.replacement} stored as {len(data)} bytes, content hash {content_hash(data):016x}")
     if journal.exists():
         sys.exit(f"an in-place override for this file is already journalled ({journal}); revert it first")
     if not args.apply:
@@ -295,6 +353,9 @@ def main() -> None:
     ap.add_argument("--apply", action="store_true", help="write the pack bytes and the database row")
     ap.add_argument("--revert", action="store_true", help="undo a previous --apply for this path")
     ap.add_argument("--in-place", action="store_true", help="overwrite the bytes in the base pack instead")
+    ap.add_argument("--source", choices=sorted(SOURCE_PRIORITY), help="index source of the entry to overwrite in place")
+    ap.add_argument("--stored", action="store_true", help="replacement file is already in stored form; write it as is")
+    ap.add_argument("--level", type=int, default=19, help="zstd level for re-compressed entries")
     ap.add_argument("--pack", type=int, help="patch pack number to append to (default: an empty one)")
     ap.add_argument("--backup-dir", type=Path, default=DEFAULT_BACKUP_DIR)
     ap.add_argument("--force", action="store_true", help="skip the game-running and database-in-use checks")
@@ -304,7 +365,7 @@ def main() -> None:
     db_path = patch_dir / "Patch.mpkdb"
     if not db_path.exists():
         sys.exit(f"not found: {db_path}")
-    file_id = hp.file_id(args.vfs_path)
+    file_id = parse_file_id(args.vfs_path)
     if args.revert:
         (revert_inplace if args.in_place else revert)(args, db_path, file_id)
     elif args.replacement and args.in_place:

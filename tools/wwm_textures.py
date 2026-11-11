@@ -188,13 +188,81 @@ def ezst_decode(blob: bytes, verify: bool = True) -> bytes:
     n = min(len(payload) // 16 * 16, 256)
     aes = AES.new(EZST_KEY, AES.MODE_ECB)
     last_err: Exception | None = None
-    while n > 0:
+    while n >= 0:
         try:
-            return _zstd(aes.decrypt(payload[:n]) + payload[n:], raw_size, verify)
+            return _zstd((aes.decrypt(payload[:n]) if n else b"") + payload[n:], raw_size, verify)
         except Exception as e:  # noqa: BLE001 - try the next prefix length
             last_err = e
             n -= 16
     raise ValueError(f"EZST decode failed: {last_err}")
+
+
+ZSTD_FRAME_MAGIC = b"\x28\xb5\x2f\xfd"
+ZSTD_EMPTY_BLOCK = b"\x00\x00\x00"
+ZSTD_LAST_EMPTY_BLOCK = b"\x01\x00\x00"
+ZSTD_MAX_WINDOW_LOG = 27
+
+
+def _zstd_split(data: bytes, level: int) -> tuple[bytes, bytes, int]:
+    """Compress to one frame; return (frame header, blocks, offset of the last block's header)."""
+    frame = zstandard.ZstdCompressor(level=level, write_content_size=True, write_checksum=False).compress(data)
+    fhd = frame[4]
+    single, dict_bytes, fcs_flag = fhd >> 5 & 1, (0, 1, 2, 4)[fhd & 3], fhd >> 6
+    pos = 5 + (0 if single else 1) + dict_bytes + (1 if single else 0, 2, 4, 8)[fcs_flag]
+    body = frame[pos:]
+    at = 0
+    while True:
+        h = int.from_bytes(body[at : at + 3], "little")
+        if h & 1:
+            return frame[:pos], body, at
+        at += 3 + (1 if (h >> 1) & 3 == 1 else h >> 3)
+
+
+def _zstd_headers(content_size: int) -> list[bytes]:
+    """Valid frame headers for this content size; their lengths cover every residue modulo 3."""
+    window_log = max(10, (content_size - 1).bit_length())
+    headers = [ZSTD_FRAME_MAGIC + b"\xa0" + struct.pack("<I", content_size)]            # single segment, u32 size
+    if window_log <= ZSTD_MAX_WINDOW_LOG:
+        window = bytes([(window_log - 10) << 3])
+        headers.append(ZSTD_FRAME_MAGIC + b"\x80" + window + struct.pack("<I", content_size))  # window, u32 size
+        headers.append(ZSTD_FRAME_MAGIC + b"\xc0" + window + struct.pack("<Q", content_size))  # window, u64 size
+    headers.append(ZSTD_FRAME_MAGIC + b"\xe0" + struct.pack("<Q", content_size))        # single segment, u64 size
+    return headers
+
+
+def zstd_frame(data: bytes, size: int | None = None, level: int = 19) -> bytes:
+    """
+    One zstd frame holding `data` (content size, no checksum, like the game's own frames).
+    With `size`, the frame is exactly that long: a frame header of suitable length is chosen and
+    empty raw blocks (3 bytes each) fill the remainder. Raises ValueError when it cannot fit.
+    """
+    if size is None:
+        return zstandard.ZstdCompressor(level=level, write_content_size=True, write_checksum=False).compress(data)
+    if len(data) >= 1 << 32:
+        raise ValueError("data too large")
+    natural, blocks, last = _zstd_split(data, level)
+    open_blocks = blocks[:last] + bytes([blocks[last] & 0xFE]) + blocks[last + 1:]
+    for header in [natural] + _zstd_headers(len(data)):
+        gap = size - len(header) - len(blocks)
+        if gap == 0:
+            return header + blocks
+        if gap >= 3 and gap % 3 == 0:
+            return header + open_blocks + ZSTD_EMPTY_BLOCK * (gap // 3 - 1) + ZSTD_LAST_EMPTY_BLOCK
+    raise ValueError(f"cannot fit {len(data)} bytes into a {size}-byte zstd frame (compressed: {len(natural) + len(blocks)} bytes)")
+
+
+def ezst_encode(data: bytes, magic: bytes = b"EZST", size: int | None = None, level: int = 19) -> bytes:
+    """
+    Wrap `data` as an EZST (encrypted) or ZSTD (plain) block. `size` = exact stored size to produce,
+    for replacing an entry in place.
+    """
+    if magic not in (b"EZST", b"ZSTD"):
+        raise ValueError("magic must be EZST or ZSTD")
+    payload = zstd_frame(data, None if size is None else size - 8, level)
+    if magic == b"EZST":
+        n = min(len(payload) // 16 * 16, 256)
+        payload = AES.new(EZST_KEY, AES.MODE_ECB).encrypt(payload[:n]) + payload[n:]
+    return magic + struct.pack("<I", len(data)) + payload
 
 
 def _zstd(payload: bytes, raw_size: int, verify: bool) -> bytes:
