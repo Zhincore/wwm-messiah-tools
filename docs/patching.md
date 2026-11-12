@@ -60,6 +60,12 @@ An entry is stored raw (MP4, Wwise audio, texture containers), as `EZST`, or as 
 ```
 The AES key is fixed (constant in `tools/wwm_textures.py`). `ezst_encode()` builds either form.
 
+Lua scripts (`LuaText/<path>.lua`) use their own wrapper, with no magic: `u32le decoded_size` + raw
+LZ4 block, decoding to a Lua 5.4 chunk with the game's opcode numbering. `wwm_patch_override.py`
+detects it on the original entry and re-wraps the replacement, which may be bytecode or plain source
+(whether the engine's loader accepts source text is untested). LZ4 cannot be padded, so in place
+needs an exact stored size; use the database route.
+
 ## Two ways to replace a file
 - **Database route.** Append the new stored bytes to a patch pack and insert or repoint the `info0`
   row. No size limit; base packs untouched. Does not reach files opened before registration.

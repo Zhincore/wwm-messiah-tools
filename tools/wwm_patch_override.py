@@ -21,7 +21,8 @@ consistent; the database is backed up first.
 
 The replacement file is the *decoded* content. It is stored the way the original entry is:
 EZST (zstd + AES prefix) and ZSTD entries are re-compressed, in place to exactly the original
-stored size; raw entries are written as is (a smaller MP4 is padded with a `free` box).
+stored size; LuaText entries (u32 size + LZ4 block) are re-wrapped, so a script override may be
+plain source or bytecode; raw entries are written as is (a smaller MP4 is padded with a `free` box).
 Pass --stored when the replacement file already is the stored form.
 <vfs_path> may also be `id:<16 hex digits>` for files known only by id (GUID-keyed textures).
 
@@ -36,6 +37,7 @@ import json
 import os
 import re
 import sqlite3
+import struct
 import sys
 import time
 from pathlib import Path
@@ -250,6 +252,7 @@ def revert(args: argparse.Namespace, db_path: Path, journal: Path) -> None:
 
 
 WRAPPERS = (b"EZST", b"ZSTD")
+LUATEXT = b"LuaText"
 SOURCE_PRIORITY = {"db1": 0, "db0": 1, "res": 2, "lt": 2, "cache": 3}
 
 
@@ -273,6 +276,12 @@ def pad_raw(data: bytes, size: int, name: str) -> bytes:
 def stored_form(args: argparse.Namespace, wrapper: bytes | None, size: int | None) -> bytes:
     """Replacement bytes as they go into the pack: wrapped like the original, `size` bytes if given."""
     data = Path(args.replacement).read_bytes()
+    if wrapper == LUATEXT and not args.stored:
+        block = luatext_encode(data)
+        if size is not None and len(block) != size:
+            sys.exit(f"LuaText replacement is {len(block)} bytes stored, original {size}; "
+                     "LZ4 cannot be padded to size, use the database route")
+        return block
     if args.stored or wrapper not in WRAPPERS:
         return data if size is None else pad_raw(data, size, args.vfs_path)
     wt = hp.load_tool("wwm_textures")
@@ -317,8 +326,20 @@ def read_stored(entry) -> bytes:
         return f.read(entry.size)
 
 
+def luatext_encode(data: bytes) -> bytes:
+    """LuaText stored form: u32le decoded size + raw LZ4 block."""
+    import lz4.block
+
+    block = struct.pack("<I", len(data)) + lz4.block.compress(data, store_size=False)
+    if lz4.block.decompress(block[4:], uncompressed_size=len(data)) != data:
+        sys.exit("internal error: LuaText block does not decode back to the replacement")
+    return block
+
+
 def wrapper_of(stored: bytes) -> bytes | None:
-    return stored[:4] if stored[:4] in WRAPPERS else None
+    if stored[:4] in WRAPPERS:
+        return stored[:4]
+    return LUATEXT if hp.load_tool("wwm_lua").unpack_luatext(stored) is not None else None
 
 
 def inplace_journal(backup_dir: Path, file_id: int) -> Path:
