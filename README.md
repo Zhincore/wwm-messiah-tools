@@ -147,7 +147,9 @@ Python package `wwm` in `tools/wwm/` (`pyproject.toml`); each tool is a console 
 - `wwm-ui-map` — UI asset map: csb trees, texts, timelines, atlases, recovered names
 - `wwm-atlas` — cut plist atlas frames, build GIFs from frame sequences
 - `wwm-lua` — Lua bytecode dump (LuaText → stock 5.4 → optional unluac); `tools/unluac-messiah.patch`
-- `wwm-build-luac` — build `lua`/`luac` 5.4 with the game's opcode numbering
+- `wwm-build-luac` — build `lua`/`luac` 5.4 with the game's opcode numbering; reads and lists game
+  bytecode, but its compiler output is not game-compatible (generic-for slots, metamethod indexes,
+  list/dict constructors; see the module docstring)
 - `wwm-tables` — HD store data tables (MANIFEST/index/data) + locale text
 - `wwm-repository` — resource repository: name ↔ GUID ↔ file id, types, dependencies
 - `wwm-files` — `export` writes a file's decoded content as the engine resolves it (patch db before

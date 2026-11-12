@@ -6,6 +6,17 @@ Inserted opcodes are aliased to their stock base opcode, so the resulting
 binaries load and run game bytecode directly, and emit it with game numbering.
 
 Stdlib only. Needs `make` and a C compiler.
+
+Known gaps: the output loads game bytecode and lists it, but the compiler is stock, so its bytecode is
+not equivalent to the game's own (compared on hexm/common/util/util.lua):
+  - generic `for`: the game reserves 5 control slots (`CALL ... 6` before TFORPREP, loop variables
+    from R[A+5]); stock reserves 4. Loops compiled here use the wrong registers in the game VM.
+  - MMBIN/MMBINI/MMBINK: operand C is a metamethod (TMS) index; the game's enum has one extra entry
+    before TM_ADD, so arithmetic and bitwise metamethods are off by one.
+  - table constructors: the game emits NEWLIST / NEWDICT (and *PROXY variants), which appear to give
+    literals its list/dict methods (`:append`, `:get`); stock emits plain NEWTABLE (inferred).
+  - GETFIELDDOT, GETTABUPFAST, SETFIELDDOT, ... are never emitted (generic forms are used instead).
+Source text compiled by the game itself (`load`) has none of these problems.
 """
 
 from __future__ import annotations

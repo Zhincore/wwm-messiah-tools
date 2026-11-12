@@ -108,42 +108,6 @@ Edit that file and pass it to `wwm-files override`, which re-wraps it like the o
   entries re-encoded this way, 72 fit; the rest (mostly meshes) were stored tighter than zstd level
   22 reaches and need the database route. One padded animation is confirmed in game.
 
-## Lua script overrides
-Game code is required after `enter_main`, when every database entry is registered, so a `Patch.mpkdb` row
-for `LuaText/<module path>.lua` takes precedence over the LT copy and leaves the LT pack (and its
-per-launch hash) untouched. Not yet confirmed in game.
-
-- Stored form: LuaText (see above). The engine compiles Lua source at runtime (`load`, mode `bt`, used for
-  server hotfixes), but whether the module loader accepts source text instead of bytecode is untested.
-- Avoid patcher-class scripts (`v5 = 1`; `launcher`, `checker`, `patch/*` and modules the patcher
-  requires: `hexm.client.game_setup`, `hexm.common.hex_object`, `hexm.client.manager.timer_manager`, ...).
-  They are re-verified against the server each launch.
-- Load order in `main.main`: `hexm.common.strict` (first line of `main.lua`, 25 lines, defines `global`),
-  `hexm.client.trace`, `functions`, `hexm.client.util.global_functions`, `hexm.client.G`, `game_setup`
-  managers, then the hotfix manager.
-- Server hotfixes are Lua source run with `util.eval_hotfix` after set-up; they replace individual
-  functions on classes (`function Cls:method` on the required module) and update data tables
-  (`G.hotfix_manager:update_table`). A hotfix redefining a function also replaces that function in an
-  overridden module. They are cached as plain source in `LocalData/LocalDB/db_mp` (keys
-  `hotfix_<timestamp>`; `wwm-decode-text` reads it).
-- A script error before `main` finishes leaves `EnterGameFail.tag`; on the next launch `checker`
-  deletes `LocalData/Cache` and `shader.version` (shader cache), not patch data.
-- The developer loose-file loader (`MDebug.EnableDebugLoader`, `MPKOverlay.tag`) is enabled only on
-  non-publish branches or with a signed debug configuration.
-- Shipped code reads loose files and compiles source: `MPatch.GetRawDataInSystem("LocalData", rel)`,
-  `io.open` on absolute paths, `load(text, chunkname)`. `game_setup.setup_gm_path()` (unconditional, in
-  `setup_config`) appends `LocalData/level_bot_records/gm_code_lua/?.lua` to `package.path` when that folder
-  exists; it belongs to the level-bot autotest recorder, and `gm_require` (GM = game-master debug
-  commands, modules stripped from release packs) falls back to loading source from it. Every
-  `gm_require` call site is behind a debug flag.
-- Lifecycle hooks for code loaded early: `G.net_dispatcher` events `E_ARRIVE_LOGIN_UI` (login window,
-  after set-up and hotfixes), `E_ENTER_GAME_STATE` (`login_states/game.lua`); the local avatar dispatches
-  `E_LOCAL_AVATAR_CREATED`. `main.main_after_hotfix` is the end of start-up. Hotfix fetches repeat later.
-- Client checks visible in Lua: `MHexAC` (module base address of the executable, prologue bytes of
-  `QueryPerformanceCounter`/`GetTickCount` and similar via `GetText`, raw-input validity) and `MQSec`
-  (loaded on Windows 10 1809+), feeding speed/invincibility/input inspection that reports to the server
-  and can record video. No Lua script-integrity check was found in the dump.
-
 ## Not built
 - Texture replacement: the container holds one EZST block per mip plus size fields, so it has to be
   rebuilt, not just re-wrapped.

@@ -15,7 +15,8 @@ Python package `wwm` in `tools/wwm/` (`pyproject.toml`, editable install in `.ve
 - `csb.py`, `ui_map.py`, `atlas.py` — Cocos UI: csb decode, UI map, atlas frame cutting
 - `lua.py` — LuaText → stock Lua 5.4 bytecode (+ unluac; needs `tools/unluac-messiah.patch`). Its `.luac`
   output uses stock opcode numbering: never feed it back into the game
-- `build_luac.py` — lua/luac 5.4 with the game's opcode numbering
+- `build_luac.py` — lua/luac 5.4 with the game's opcode numbering; its compiler output does not run
+  correctly in the game (gaps in the docstring)
 - `tables.py` — HD store data tables: `Store.table(name)`, `Locale` text ids; `--list/--table/--dump`
 - `repository.py` — resource repository: `Repository.records()`, `guid_file_id()`; names for GUID-keyed files
 - `files.py` (`wwm-files export|override|revert|revert-all`) — `export` is read-only; the rest write to the install (patch pack + `Patch.mpkdb`
