@@ -9,15 +9,24 @@ share one shape:
 
 | column | meaning |
 |---|---|
-| v0 | file id, **signed** i64 |
+| v0 | file id, **signed** i64 (in `info1`, the id XORed with `INFO1_XOR_KEY` = 1234927562014348681) |
 | v1 | stored size in bytes |
-| v2 | pack number: bytes live in `Patch{v2}.mpk` |
+| v2 | pack number: bytes live in `Patch{v2}.mpk` (patcher files sit in pack 1) |
 | v3 | content hash of the stored bytes (below), signed i64 |
-| v4, v5 | flags, 0 on ordinary rows |
+| v4 | flag, 0 on ordinary `info0` rows |
+| v5 | patcher-file flag: 1 marks patcher/bootstrap scripts (`patch_main`, `patcher`, `launcher`, …), else 0 |
 | v6 | offset inside the pack |
+
+`info0` holds foreground files, `info1` background/deferred ones (its `v0` is obfuscated with the XOR
+key above). v5 comes from the engine's patcher-file set (`INDEX_PATCHER_FILE`); the patcher reads those
+rows apart (`select * from info0 where v5 <> 1 OR v2 <> 1`).
 
 The engine reads these rows directly. Repointing a row at other bytes (new pack, offset, size, hash)
 changes what the game loads for that id: confirmed with an EZST animation.
+
+Patcher-class files (v5=1) are the exception: an `info0` override of one does not survive a launch. On
+boot the essential/patcher hash verify finds the mismatch and clears the patch-db state, dropping the
+row. The bootstrap scripts also exist in the base `Resources.mpk`, so the engine still loads a copy.
 
 ## Content hash (v3, patchlist hash64)
 ```
@@ -55,7 +64,11 @@ The AES key is fixed (constant in `tools/wwm_textures.py`). `ezst_encode()` buil
 - **Database route.** Append the new stored bytes to a patch pack and insert or repoint the `info0`
   row. No size limit; base packs untouched. Does not reach files opened before registration.
 - **In place.** Overwrite the stored bytes inside the pack. The new stored form must be exactly as
-  long as the old one, because neighbours and index offsets do not move.
+  long as the old one, because neighbours and index offsets do not move. When the overwritten entry is
+  itself a patch-database row (a `Patch{n}.mpk` pack targeted via `db0`/`db1`), its `v3` content hash
+  is updated in place to match the new bytes, so the row does not go stale; `--in-place --revert`
+  restores both the bytes and the hash. Base-pack (`res`/`lt`) in-place edits have no row to update,
+  but patcher-class files are re-verified against the server patchlist on boot and may be restored.
 
 ### Fitting an exact size
 - Raw MP4: append a `free` box of the missing length.

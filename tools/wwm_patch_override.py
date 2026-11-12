@@ -15,7 +15,9 @@ Usage:
 Add --in-place to overwrite the file's stored bytes inside its pack instead (needed for files the
 patcher opens before patch entries are registered, e.g. the login video). The stored replacement
 must not be larger than the original. The original bytes are saved and `--in-place --revert`
-writes them back.
+writes them back. When the overwritten entry is itself a patch-database row (an earlier override),
+its `v3` content hash is updated to match the new bytes (and restored on revert) so the row stays
+consistent; the database is backed up first.
 
 The replacement file is the *decoded* content. It is stored the way the original entry is:
 EZST (zstd + AES prefix) and ZSTD entries are re-compressed, in place to exactly the original
@@ -177,6 +179,9 @@ def apply(args: argparse.Namespace, patch_dir: Path, db_path: Path, file_id: int
     print(f"replacement  {args.replacement} stored {(wrapper or b'raw').decode()}, {len(data)} bytes, content hash {chash:016x}")
     if v5 == 0 and flags is None and args.v5 is None:
         print("note: patcher flag v5=0; bootstrap/patcher scripts (patch_main, patcher, launcher, ...) need --v5 1")
+    if v5 == 1:
+        print("warning: v5=1 (patcher-class) row; the boot patcher/essential verify drops such overrides, "
+              "so it will not survive a launch (docs/patching.md)")
     print(f"pack         {pack} (append at offset {offset})")
     print(f"info0 row    {row}")
     if journal.exists():
@@ -320,6 +325,15 @@ def inplace_journal(backup_dir: Path, file_id: int) -> Path:
     return backup_dir / f"{file_id:016x}.inplace.json"
 
 
+def db_target(source: str, file_id: int) -> tuple[str, int] | None:
+    """(table, v0 key) of the row behind a db-sourced entry; None for base-pack sources."""
+    if source == "db0":
+        return "info0", signed64(file_id)
+    if source == "db1":
+        return "info1", signed64(file_id ^ INFO1_XOR_KEY)
+    return None
+
+
 def apply_inplace(args: argparse.Namespace, db_path: Path, file_id: int) -> None:
     entries, n_hits = find_entries(args.install_root, file_id)
     if args.source:
@@ -333,12 +347,20 @@ def apply_inplace(args: argparse.Namespace, db_path: Path, file_id: int) -> None
         print(f"note: another entry exists in {other.container} ({other.source}); pick it with --source {other.source}")
     original = read_stored(entry)
     data = stored_form(args, wrapper_of(original), entry.size)
+    new_hash = content_hash(data)
+    target = db_target(entry.source, file_id)
     journal = inplace_journal(args.backup_dir, file_id)
     print(f"file id      {file_id:016x} ({args.vfs_path})")
     print(f"target       {entry.container} offset {entry.offset} size {entry.size}")
     print(f"original     content hash {content_hash(original):016x}")
     print(f"stored as    {(wrapper_of(original) or b'raw').decode()} ({entry.source})")
-    print(f"replacement  {args.replacement} stored as {len(data)} bytes, content hash {content_hash(data):016x}")
+    print(f"replacement  {args.replacement} stored as {len(data)} bytes, content hash {new_hash:016x}")
+    if target:
+        print(f"db row       {target[0]} v3 content hash -> {new_hash:016x} (kept in sync with the overwritten bytes)")
+    flags = read_info0_flags(db_path, file_id)
+    if flags and flags[1] == 1:
+        print("warning: this file has a v5=1 (patcher-class) info0 row; the boot patcher/essential verify "
+              "may restore it from the server, so an in-place edit can be undone on launch (docs/patching.md)")
     if journal.exists():
         sys.exit(f"an in-place override for this file is already journalled ({journal}); revert it first")
     if not args.apply:
@@ -348,20 +370,41 @@ def apply_inplace(args: argparse.Namespace, db_path: Path, file_id: int) -> None
     args.backup_dir.mkdir(parents=True, exist_ok=True)
     saved = args.backup_dir / f"{file_id:016x}.original"
     saved.write_bytes(original)
-    journal.write_text(json.dumps({
+    record = {
         "vfs_path": args.vfs_path, "file_id": file_id, "container": entry.container, "offset": entry.offset,
         "size": entry.size, "original": str(saved), "original_hash": content_hash(original),
-    }, indent=1))
-    with open(entry.container, "r+b") as f:
-        f.seek(entry.offset)
-        f.write(data)
-        f.flush()
-        os.fsync(f.fileno())
-    with open(entry.container, "rb") as f:
-        f.seek(entry.offset)
-        if f.read(entry.size) != data:
-            sys.exit("verification failed: pack bytes differ from the replacement; run --in-place --revert")
+    }
+    con = sqlite3.connect(db_path) if target else None
+    try:
+        if target:
+            table, key = target
+            db_backup = args.backup_dir / f"Patch.mpkdb.{time.strftime('%Y%m%d-%H%M%S')}"
+            with sqlite3.connect(db_backup) as dst:
+                con.backup(dst)
+            row_before = con.execute(f"select * from {table} where v0=?", (key,)).fetchone()
+            if row_before is None:
+                sys.exit(f"{table} row for the target entry vanished; aborting without writing")
+            record.update(db_table=table, db_key=key, db_row_before=list(row_before),
+                          db_v3_applied=signed64(new_hash), db_backup=str(db_backup))
+        journal.write_text(json.dumps(record, indent=1))
+        with open(entry.container, "r+b") as f:
+            f.seek(entry.offset)
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        with open(entry.container, "rb") as f:
+            f.seek(entry.offset)
+            if f.read(entry.size) != data:
+                sys.exit("verification failed: pack bytes differ from the replacement; run --in-place --revert")
+        if target:
+            with con:
+                con.execute(f"update {table} set v3=? where v0=?", (signed64(new_hash), key))
+    finally:
+        if con:
+            con.close()
     print(f"applied in place. original bytes: {saved}\njournal: {journal}")
+    if target:
+        print(f"database backup: {record['db_backup']}")
 
 
 def revert_inplace(args: argparse.Namespace, db_path: Path, journal: Path) -> None:
@@ -377,8 +420,21 @@ def revert_inplace(args: argparse.Namespace, db_path: Path, journal: Path) -> No
         f.write(original)
         f.flush()
         os.fsync(f.fileno())
-    journal.rename(journal.with_suffix(".reverted.json"))
     print(f"restored {j['size']} original bytes at {j['container']}:{j['offset']}")
+    if "db_table" in j:
+        table, key, before = j["db_table"], j["db_key"], j["db_row_before"]
+        con = sqlite3.connect(db_path)
+        try:
+            with con:
+                current = con.execute(f"select * from {table} where v0=?", (key,)).fetchone()
+                if current is not None and current[3] != j["db_v3_applied"]:
+                    print(f"{table} v3 changed since apply (now {current[3]}); leaving the database row as is")
+                else:
+                    con.execute(f"update {table} set v3=? where v0=?", (before[3], key))
+                    print(f"restored {table} v3 content hash")
+        finally:
+            con.close()
+    journal.rename(journal.with_suffix(".reverted.json"))
 
 
 def revert_all(args: argparse.Namespace, db_path: Path) -> None:
