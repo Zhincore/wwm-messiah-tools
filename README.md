@@ -158,6 +158,7 @@ Python package `wwm` in `tools/wwm/` (`pyproject.toml`); each tool is a console 
   EZST animation padded with empty zstd blocks; through `Patch.mpkdb`, an EZST animation whose existing
   row was repointed. Files the patcher opens before it registers patch entries (the login video) only
   respond to the in-place route.
+- `tests/` — pytest on synthetic data: file ids, codecs, block packs, override/export/revert round trips
 - `docs/` — format notes: `file-id.md`, `hd-store.md`, `patching.md`, `resource-names.md`, `chat-markup.md`
 - `mpk/` — Rust: v1 reader (Diablo Immortal era) and v3 `.mpkinfo` parser
 - `texture/` — Rust: EZST codec, texture container parser, PNG/DDS conversion

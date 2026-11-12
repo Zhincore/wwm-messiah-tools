@@ -86,7 +86,7 @@ Edit that file and pass it to `wwm-files override`, which re-wraps it like the o
   The frame's last block gets its last-block flag cleared and empty raw blocks (3 bytes each:
   `00 00 00`, the final one `01 00 00`) are appended. A gap that is not a multiple of 3 is absorbed
   by the frame header: four equivalent headers (with or without a window descriptor byte, content
-  size as u32 or u64) give lengths covering every residue modulo 3. Of 113 real EZST
+  size as u32 or u64) give lengths covering every residue modulo 3, so every gap except 1 and 4 bytes fits. Of 113 real EZST
   entries re-encoded this way, 72 fit; the rest (mostly meshes) were stored tighter than zstd level
   22 reaches and need the database route. One padded animation is confirmed in game.
 

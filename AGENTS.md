@@ -25,7 +25,7 @@ Python package `wwm` in `tools/wwm/` (`pyproject.toml`, editable install in `.ve
 - `resources/` — Rust: legacy Diablo Immortal `.repository` code, untouched
 
 ## Rules
-- Python: `uv pip install --python .venv/bin/python -e .` (deps in `pyproject.toml`); `cargo build` for Rust.
+- Python: `uv pip install --python .venv/bin/python -e '.[dev]'` (deps in `pyproject.toml`); `cargo build` for Rust.
 - Never stat/open per index entry on the game drive: 1.5M entries, slow mount. Resolve containers once per pack.
 - Never hardcode pack numbers, file ids or offsets. Resolve through indexes; packs change per build.
 - Block packs (start with `EZST`): index offsets are invalid in lite installs, walk blocks. Detection is
@@ -37,5 +37,6 @@ Python package `wwm` in `tools/wwm/` (`pyproject.toml`, editable install in `.ve
 - Working outputs (harvests, csb dumps, logs) go to `~/.claude/projects/<slug>/work/`, not `/tmp` (lost on reboot).
 - Extraction output is large (~50 GB full). Check `df` before running; write outside the repo.
 - Game data, extracted assets, manifests: never commit.
-- Rust: run `cargo test -p messiah-mpk` / `-p messiah-texture` after touching those crates.
+- Tests: `.venv/bin/python -m pytest` (synthetic data, no install needed; dev extra `.[dev]`) after touching
+  `tools/wwm`; `cargo test -p messiah-mpk` / `-p messiah-texture` after touching those crates.
 - Keep comments to what the code does; no change logs in code.

@@ -6,6 +6,9 @@ requires-python = ">=3.12"
 license = "MIT"
 dependencies = ["pillow", "pycryptodome", "zstandard", "msgpack", "lz4", "mmh3"]
 
+[project.optional-dependencies]
+dev = ["pytest"]
+
 [project.scripts]
 wwm-atlas = "wwm.atlas:main"
 wwm-build-luac = "wwm.build_luac:main"
@@ -26,3 +29,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["tools/wwm"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

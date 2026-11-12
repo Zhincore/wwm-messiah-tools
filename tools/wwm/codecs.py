@@ -122,18 +122,21 @@ HEADER_LEN = len(CHUNK_HEADER)  # 31, nupvalues follows
 MAX_CHUNK = 64 << 20
 
 
-def luatext_decode(blob: bytes) -> bytes | None:
-    """LuaText -> Lua chunk, or None when the blob is not one."""
-    if len(blob) < 8:
+def luatext_decode(blob: bytes, require_chunk: bool = True) -> bytes | None:
+    """LuaText -> content, or None when the blob is not one. By default the content must be a Lua chunk;
+    `require_chunk=False` also accepts other content (e.g. a plain-source override)."""
+    if len(blob) < 5:
         return None
     size = struct.unpack_from("<I", blob, 0)[0]
-    if not HEADER_LEN < size <= MAX_CHUNK:
+    if not 0 < size <= MAX_CHUNK or (require_chunk and size <= HEADER_LEN):
         return None
     try:
         out = lz4.block.decompress(blob[4:], uncompressed_size=size)
     except Exception:
         return None
-    return out if out[:HEADER_LEN] == CHUNK_HEADER else None
+    if len(out) != size or (require_chunk and out[:HEADER_LEN] != CHUNK_HEADER):
+        return None
+    return out
 
 
 def luatext_encode(data: bytes) -> bytes:

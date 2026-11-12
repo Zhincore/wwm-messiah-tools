@@ -290,12 +290,14 @@ def find_entries(install_root: Path, file_id: int) -> tuple[list, int]:
     byte position; they are dropped here. A nonzero raw count with an empty list means the file exists
     only in block packs: patch it through the database route, not in place.
     """
-    hits = [e for e in vfs.collect_entries(install_root, {"res", "lt", "cache", "db"}) if e.file_id == file_id]
+    entries = vfs.collect_entries(install_root, {"res", "lt", "cache", "db"})
+    hits = [e for e in entries if e.file_id == file_id]
     usable = []
     for e in hits:
         if e.source == "cache" and not os.path.exists(e.container):
             continue
-        if e.source in ("res", "lt", "cache") and vfs.Pack(e.container).blocks is not None:
+        siblings = [x for x in entries if x.container == e.container]
+        if e.source in ("res", "lt", "cache") and vfs.Pack(e.container, siblings).blocks is not None:
             print(f"note: skipping {e.container} ({e.source} block pack; index offset is not a physical file offset)")
             continue
         usable.append(e)
@@ -330,10 +332,15 @@ def export(args: argparse.Namespace, file_id: int) -> None:
         if other.source != entry.source and read_stored(other) != stored:
             print(f"note: {other.container} ({other.source}) holds different bytes; pick it with --source {other.source}")
     wrapper = wrapper_of(stored)
+    if wrapper is None:
+        # an override keeps the original's wrapper even when its content is not recognisable (Lua source)
+        hint = next((w for o in entries[1:] if (w := wrapper_of(read_stored(o)))), None)
+        if hint == LUATEXT and codecs.luatext_decode(stored, require_chunk=False) is not None:
+            wrapper = LUATEXT
     if args.stored or wrapper is None:
         data = stored
     elif wrapper == LUATEXT:
-        data = codecs.luatext_decode(stored)
+        data = codecs.luatext_decode(stored, require_chunk=False)
     else:
         data = codecs.ezst_decode(stored)
     Path(args.output).write_bytes(data)
