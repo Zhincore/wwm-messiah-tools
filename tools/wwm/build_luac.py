@@ -16,7 +16,6 @@ not equivalent to the game's own (compared on hexm/common/util/util.lua):
   - table constructors: the game emits NEWLIST / NEWDICT (and *PROXY variants), which appear to give
     literals its list/dict methods (`:append`, `:get`); stock emits plain NEWTABLE (inferred).
   - GETFIELDDOT, GETTABUPFAST, SETFIELDDOT, ... are never emitted (generic forms are used instead).
-Source text compiled by the game itself (`load`) has none of these problems.
 """
 
 from __future__ import annotations

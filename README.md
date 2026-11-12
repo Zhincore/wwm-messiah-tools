@@ -152,14 +152,9 @@ Python package `wwm` in `tools/wwm/` (`pyproject.toml`); each tool is a console 
   list/dict constructors; see the module docstring)
 - `wwm-tables` — HD store data tables (MANIFEST/index/data) + locale text
 - `wwm-repository` — resource repository: name ↔ GUID ↔ file id, types, dependencies
-- `wwm-files` — `export` writes a file's decoded content as the engine resolves it (patch db before
-  packages), ready to edit and feed back. Experimental: replace one VFS file (`override`), either through a `Patch.mpkdb` entry or
-  `--in-place` in its pack; EZST/ZSTD entries are re-compressed (in place: to the exact stored size),
-  LuaText entries re-wrapped; everything is journalled; `revert` restores one file, `revert-all` every
-  override of the install. Confirmed in game (lite install): in place, a raw MP4 (login video) and an
-  EZST animation padded with empty zstd blocks; through `Patch.mpkdb`, an EZST animation whose existing
-  row was repointed. Files the patcher opens before it registers patch entries (the login video) only
-  respond to the in-place route.
+- `wwm-files` — single VFS entries: `export` writes the decoded content the engine resolves (patch
+  database before packages); `override`/`revert` change one entry through `Patch.mpkdb` or in its pack
+  and undo it (journalled). Used to verify the resolution and stored-form findings in `docs/patching.md`.
 - `tests/` — pytest on synthetic data: file ids, codecs, block packs, override/export/revert round trips
 - `docs/` — format notes: `file-id.md`, `hd-store.md`, `patching.md`, `resource-names.md`, `chat-markup.md`
 - `mpk/` — Rust: v1 reader (Diablo Immortal era) and v3 `.mpkinfo` parser
