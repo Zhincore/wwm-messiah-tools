@@ -4,27 +4,36 @@ Tools for Where Winds Meet (Messiah engine) asset packs. Format details: `README
 (self-contained; record new findings there). Secondary reference: https://github.com/ArArgon/yysls-re (docs/).
 
 ## Layout
-- `tools/wwm_textures.py` — texture/image extractor; also home of `Pack`, `Entry`, `collect_entries`, `ezst_decode`
-- `tools/wwm_decode_text.py` — HEX_/HEXB_/shift-1/CLv2/LocalDB text decoder
-- `tools/wwm_harvest_paths.py` — path harvest + `file_id()` hash; `load_tool()` imports siblings once (pickling needs this)
-- `tools/wwm_csb.py`, `tools/wwm_ui_map.py`, `tools/wwm_atlas.py` — Cocos UI: csb decode, UI map, atlas frame cutting
-- `tools/wwm_lua.py` — LuaText → stock Lua 5.4 bytecode (+ unluac; needs `tools/unluac-messiah.patch`)
-- `tools/wwm_hd.py` — HD store data tables: `Store.table(name)`, `Locale` text ids; `--list/--table/--dump`
-- `tools/wwm_repository.py` — resource repository: `Repository.records()`, `guid_file_id()`; names for GUID-keyed files
-- `tools/wwm_patch_override.py` — writes to the install (patch pack + `Patch.mpkdb` row); only run when the user asks, game closed
+Python package `wwm` in `tools/wwm/` (`pyproject.toml`, editable install in `.venv`). Tools run as
+`.venv/bin/wwm-<name>` or `python -m wwm.<module>`; modules import each other relatively (`from . import vfs`).
+- `ids.py` — `file_id()` path hash, `content_hash()` (patch db v3), `signed64()`
+- `codecs.py` — EZST/ZSTD encode/decode (exact-size zstd framing), LuaText encode/decode
+- `vfs.py` — `collect_entries()` over all index sources, `Entry`, `Pack` (mmap, block-pack walk), `TEX_MAGIC`
+- `textures.py` (`wwm-textures`), `texture_index.py` — texture container parse/extract, header census
+- `decode_text.py` — HEX_/HEXB_/shift-1/CLv2/LocalDB text decoder
+- `harvest.py` — path harvest from payloads, csb capture, manifest matching
+- `csb.py`, `ui_map.py`, `atlas.py` — Cocos UI: csb decode, UI map, atlas frame cutting
+- `lua.py` — LuaText → stock Lua 5.4 bytecode (+ unluac; needs `tools/unluac-messiah.patch`). Its `.luac`
+  output uses stock opcode numbering: never feed it back into the game
+- `build_luac.py` — lua/luac 5.4 with the game's opcode numbering
+- `tables.py` — HD store data tables: `Store.table(name)`, `Locale` text ids; `--list/--table/--dump`
+- `repository.py` — resource repository: `Repository.records()`, `guid_file_id()`; names for GUID-keyed files
+- `files.py` (`wwm-files override|revert|revert-all`) — writes to the install (patch pack + `Patch.mpkdb`
+  row); only run when the user asks, game closed
 - `mpk/` — Rust: v3 `.mpkinfo` parser (`v3_parser.rs`), legacy v1 reader
 - `texture/` — Rust: `ezst`, `container`, `convert` (PNG via texture2ddecoder, DDS DX10); CLI converts payload files
 - `resources/` — Rust: legacy Diablo Immortal `.repository` code, untouched
 
 ## Rules
-- Python deps: `pillow pycryptodome zstandard msgpack lz4 mmh3` in a venv; `cargo build` for Rust.
+- Python: `uv pip install --python .venv/bin/python -e .` (deps in `pyproject.toml`); `cargo build` for Rust.
 - Never stat/open per index entry on the game drive: 1.5M entries, slow mount. Resolve containers once per pack.
 - Never hardcode pack numbers, file ids or offsets. Resolve through indexes; packs change per build.
 - Block packs (start with `EZST`): index offsets are invalid in lite installs, walk blocks. Detection is
   `Pack._index_is_physical` (sampled payload magics), never "starts with EZST" alone: full installs have
   700 MB packs that start with an EZST entry.
 - Memory: packs are mmapped, blocks decoded on demand; never `read()` a whole pack or keep decoded blocks.
-  Multiprocessing uses `spawn` so workers do not inherit the 2.8M-entry index. Python venv lives in `.venv`.
+  Multiprocessing uses `spawn` so workers do not inherit the 2.8M-entry index; worker functions must be
+  module-level in the package (spawn pickles them by import path).
 - Working outputs (harvests, csb dumps, logs) go to `~/.claude/projects/<slug>/work/`, not `/tmp` (lost on reboot).
 - Extraction output is large (~50 GB full). Check `df` before running; write outside the repo.
 - Game data, extracted assets, manifests: never commit.

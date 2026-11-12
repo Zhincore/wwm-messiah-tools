@@ -11,8 +11,8 @@ Detected by content, not by extension:
   SQLite    LocalData/LocalDB/*: localdb table, content = msgpack XOR NetEase key
 
 Usage:
-  wwm_decode_text.py FILE [FILE ...]            print decoded content to stdout
-  wwm_decode_text.py FILE ... -o OUT_DIR        write <name>.json / .txt per input
+  wwm-decode-text FILE [FILE ...]            print decoded content to stdout
+  wwm-decode-text FILE ... -o OUT_DIR        write <name>.json / .txt per input
 """
 
 from __future__ import annotations

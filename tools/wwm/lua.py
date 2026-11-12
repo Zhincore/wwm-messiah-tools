@@ -11,43 +11,24 @@ Script entries are keyed by path hash like everything else; harvested paths reso
 "LuaText/" prefix. Entries without a recovered name are written under their file id.
 
 Usage:
-  wwm_lua.py <install_root> -o OUT [--paths paths.txt] [--unluac unluac.jar] [-j N] [--limit N]
+  wwm-lua <install_root> -o OUT [--paths paths.txt] [--unluac unluac.jar] [-j N] [--limit N]
 """
 
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import multiprocessing as mp
 import os
 import struct
 import subprocess
-import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
-import lz4.block
 
-_here = Path(__file__).resolve().parent
-
-
-def _load(name):
-    if name in sys.modules:
-        return sys.modules[name]
-    spec = importlib.util.spec_from_file_location(name, _here / f"{name}.py")
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[name] = mod
-    spec.loader.exec_module(mod)
-    return mod
+from . import codecs, vfs
+from .codecs import HEADER_LEN, MAX_CHUNK, luatext_decode
 
 
-wt = _load("wwm_textures")
-hp = _load("wwm_harvest_paths")
-
-LUA_SIGNATURE = b"\x1bLua"
-CHUNK_HEADER = LUA_SIGNATURE + b"\x54\x00\x19\x93\r\n\x1a\n" + b"\x04\x08\x08" + (0x5678).to_bytes(8, "little") + struct.pack("<d", 370.5)
-HEADER_LEN = len(CHUNK_HEADER)  # 31, nupvalues follows
-MAX_CHUNK = 64 << 20
 
 STD_OPCODES = [
     "MOVE", "LOADI", "LOADF", "LOADK", "LOADKX", "LOADFALSE", "LFALSESKIP", "LOADTRUE", "LOADNIL", "GETUPVAL",
@@ -157,20 +138,6 @@ def _proto(buf: bytearray, pos: int, warnings: list[str]) -> int:
     return pos
 
 
-def unpack_luatext(blob: bytes) -> bytes | None:
-    """LuaText -> chunk, or None when the blob is not one."""
-    if len(blob) < 8:
-        return None
-    size = struct.unpack_from("<I", blob, 0)[0]
-    if not HEADER_LEN < size <= MAX_CHUNK:
-        return None
-    try:
-        out = lz4.block.decompress(blob[4:], uncompressed_size=size)
-    except Exception:
-        return None
-    return out if out[:HEADER_LEN] == CHUNK_HEADER else None
-
-
 def remap_chunk(chunk: bytes) -> tuple[bytes, list[str]]:
     buf = bytearray(chunk)
     warnings: list[str] = []
@@ -197,7 +164,7 @@ def process_pack(args) -> tuple[str, list[tuple[int, str, str, int]], Counter]:
     out_dir = Path(out_dir)
     rows, stats = [], Counter()
     try:
-        pack = wt.Pack(container, entries)
+        pack = vfs.Pack(container, entries)
     except OSError:
         return container, rows, stats
     if pack.blocks is not None:
@@ -216,10 +183,10 @@ def process_pack(args) -> tuple[str, list[tuple[int, str, str, int]], Counter]:
             continue
         if blob[:4] in (b"EZST", b"ZSTD"):
             try:
-                blob = wt.ezst_decode(blob)
+                blob = codecs.ezst_decode(blob)
             except Exception:
                 continue
-        chunk = unpack_luatext(blob)
+        chunk = luatext_decode(blob)
         if chunk is None:
             continue
         stats["lua"] += 1
@@ -274,7 +241,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("install_root", nargs="?", default=".")
     ap.add_argument("-o", "--output", required=True)
-    ap.add_argument("--paths", help="harvested path list for naming (wwm_harvest_paths.py)")
+    ap.add_argument("--paths", help="harvested path list for naming (wwm-harvest)")
     ap.add_argument("--unluac", metavar="JAR", help="decompile with unluac after extraction")
     ap.add_argument("-j", "--jobs", type=int, default=3)
     ap.add_argument("--limit", type=int, default=0, help="max scripts per container (smoke test)")
@@ -292,7 +259,7 @@ def main() -> None:
         return
 
     root = Path(args.install_root)
-    entries = wt.collect_entries(root, {"res", "lt", "cache", "db"})
+    entries = vfs.collect_entries(root, {"res", "lt", "cache", "db"})
     ids = {e.file_id for e in entries}
     names: dict[int, str] = {}
     if args.paths:
@@ -301,7 +268,7 @@ def main() -> None:
             if not p.endswith(".lua"):
                 continue
             for cand in (p, "LuaText/" + p):
-                fid = hp.file_id(cand)
+                fid = ids.file_id(cand)
                 if fid in ids:
                     names.setdefault(fid, p)
                     break

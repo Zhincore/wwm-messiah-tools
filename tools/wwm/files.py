@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """
-Override one VFS file by adding an entry to the patch database (LocalData/Patch/Patch.mpkdb).
+Override VFS files through the patch database (LocalData/Patch/Patch.mpkdb).
 
 The replacement is appended to a patch pack and a row is inserted into table `info0`
 (v0 file id, v1 size, v2 pack, v3 content hash, v4/v5 flags, v6 offset). Base packs are not touched.
-Every change is journalled so `--revert` restores the previous state.
+Every change is journalled so `revert` restores the previous state.
 
 Usage:
-  wwm_patch_override.py <install_root> <vfs_path> <replacement_file>            dry run
-  wwm_patch_override.py <install_root> <vfs_path> <replacement_file> --apply
-  wwm_patch_override.py <install_root> <vfs_path> --revert
-  wwm_patch_override.py <install_root> --revert-all                             undo every override, newest first
+  wwm-files override <install_root> <vfs_path> <replacement_file>          dry run
+  wwm-files override <install_root> <vfs_path> <replacement_file> --apply
+  wwm-files revert <install_root> <vfs_path>
+  wwm-files revert-all <install_root>                                      undo every override, newest first
 
 Add --in-place to overwrite the file's stored bytes inside its pack instead (needed for files the
 patcher opens before patch entries are registered, e.g. the login video). The stored replacement
-must not be larger than the original. The original bytes are saved and `--in-place --revert`
+must not be larger than the original. The original bytes are saved and `revert --in-place`
 writes them back. When the overwritten entry is itself a patch-database row (an earlier override),
 its `v3` content hash is updated to match the new bytes (and restored on revert) so the row stays
 consistent; the database is backed up first.
@@ -37,38 +37,22 @@ import json
 import os
 import re
 import sqlite3
-import struct
 import sys
 import time
 from pathlib import Path
 
-import mmh3
+
+from . import codecs, vfs
+from .ids import content_hash, file_id, signed64
 
 _here = Path(__file__).resolve().parent
 sys.path.insert(0, str(_here))
-import wwm_harvest_paths as hp  # noqa: E402
 
-MASK64 = (1 << 64) - 1
-SMALL_FILE = 4 << 20
-CHUNK_LARGE_FILE = 2 << 20
-CHUNK_SMALL_FILE = 32 << 20
 USER_PACK_LIMIT = 1000
 ZSTD_MAX_LEVEL = 22
 DEFAULT_BACKUP_DIR = Path.home() / ".local/share/wwm-messiah-tools/overrides"
 
 
-def content_hash(data: bytes) -> int:
-    """MurmurHash3-128 per chunk, halves XORed, chunks XORed; files >= 4 MiB use 2 MiB chunks."""
-    chunk = CHUNK_LARGE_FILE if len(data) >= SMALL_FILE else CHUNK_SMALL_FILE
-    acc = 0
-    for i in range(0, max(len(data), 1), chunk):
-        h = mmh3.hash128(data[i : i + chunk], signed=False)
-        acc ^= (h >> 64) ^ (h & MASK64)
-    return acc
-
-
-def signed64(v: int) -> int:
-    return v - (1 << 64) if v >= 1 << 63 else v
 
 
 def game_running() -> bool:
@@ -187,7 +171,7 @@ def apply(args: argparse.Namespace, patch_dir: Path, db_path: Path, file_id: int
     print(f"pack         {pack} (append at offset {offset})")
     print(f"info0 row    {row}")
     if journal.exists():
-        sys.exit(f"an override for this file is already journalled ({journal}); --revert it first")
+        sys.exit(f"an override for this file is already journalled ({journal}); `wwm-files revert` it first")
     if not args.apply:
         print("dry run: nothing written (add --apply)")
         return
@@ -218,7 +202,7 @@ def apply(args: argparse.Namespace, patch_dir: Path, db_path: Path, file_id: int
     with open(pack, "rb") as f:
         f.seek(offset)
         if content_hash(f.read(len(data))) != chash:
-            sys.exit("verification failed: pack bytes do not hash to the inserted value; run --revert")
+            sys.exit("verification failed: pack bytes do not hash to the inserted value; run `wwm-files revert`")
     print(f"applied. database backup: {db_backup}\njournal: {journal}")
 
 
@@ -258,7 +242,7 @@ SOURCE_PRIORITY = {"db1": 0, "db0": 1, "res": 2, "lt": 2, "cache": 3}
 
 def parse_file_id(vfs_path: str) -> int:
     m = re.fullmatch(r"id:([0-9a-fA-F]{16})", vfs_path)
-    return int(m.group(1), 16) if m else hp.file_id(vfs_path)
+    return int(m.group(1), 16) if m else file_id(vfs_path)
 
 
 def pad_raw(data: bytes, size: int, name: str) -> bytes:
@@ -277,24 +261,23 @@ def stored_form(args: argparse.Namespace, wrapper: bytes | None, size: int | Non
     """Replacement bytes as they go into the pack: wrapped like the original, `size` bytes if given."""
     data = Path(args.replacement).read_bytes()
     if wrapper == LUATEXT and not args.stored:
-        block = luatext_encode(data)
+        block = codecs.luatext_encode(data)
         if size is not None and len(block) != size:
             sys.exit(f"LuaText replacement is {len(block)} bytes stored, original {size}; "
                      "LZ4 cannot be padded to size, use the database route")
         return block
     if args.stored or wrapper not in WRAPPERS:
         return data if size is None else pad_raw(data, size, args.vfs_path)
-    wt = hp.load_tool("wwm_textures")
     block, error = None, None
     for level in dict.fromkeys((args.level, ZSTD_MAX_LEVEL)):
         try:
-            block = wt.ezst_encode(data, wrapper, size, level)
+            block = codecs.ezst_encode(data, wrapper, size, level)
             break
         except ValueError as e:
             error = e
     if block is None:
         sys.exit(f"{error}; the compressed replacement does not fit the original stored size")
-    if wt.ezst_decode(block) != data:
+    if codecs.ezst_decode(block) != data:
         sys.exit("internal error: re-wrapped block does not decode back to the replacement")
     return block
 
@@ -306,13 +289,12 @@ def find_entries(install_root: Path, file_id: int) -> tuple[list, int]:
     byte position; they are dropped here. A nonzero raw count with an empty list means the file exists
     only in block packs: patch it through the database route, not in place.
     """
-    wt = hp.load_tool("wwm_textures")
-    hits = [e for e in wt.collect_entries(install_root, {"res", "lt", "cache", "db"}) if e.file_id == file_id]
+    hits = [e for e in vfs.collect_entries(install_root, {"res", "lt", "cache", "db"}) if e.file_id == file_id]
     usable = []
     for e in hits:
         if e.source == "cache" and not os.path.exists(e.container):
             continue
-        if e.source in ("res", "lt", "cache") and wt.Pack(e.container).blocks is not None:
+        if e.source in ("res", "lt", "cache") and vfs.Pack(e.container).blocks is not None:
             print(f"note: skipping {e.container} ({e.source} block pack; index offset is not a physical file offset)")
             continue
         usable.append(e)
@@ -326,20 +308,10 @@ def read_stored(entry) -> bytes:
         return f.read(entry.size)
 
 
-def luatext_encode(data: bytes) -> bytes:
-    """LuaText stored form: u32le decoded size + raw LZ4 block."""
-    import lz4.block
-
-    block = struct.pack("<I", len(data)) + lz4.block.compress(data, store_size=False)
-    if lz4.block.decompress(block[4:], uncompressed_size=len(data)) != data:
-        sys.exit("internal error: LuaText block does not decode back to the replacement")
-    return block
-
-
 def wrapper_of(stored: bytes) -> bytes | None:
     if stored[:4] in WRAPPERS:
         return stored[:4]
-    return LUATEXT if hp.load_tool("wwm_lua").unpack_luatext(stored) is not None else None
+    return LUATEXT if codecs.luatext_decode(stored) is not None else None
 
 
 def inplace_journal(backup_dir: Path, file_id: int) -> Path:
@@ -416,7 +388,7 @@ def apply_inplace(args: argparse.Namespace, db_path: Path, file_id: int) -> None
         with open(entry.container, "rb") as f:
             f.seek(entry.offset)
             if f.read(entry.size) != data:
-                sys.exit("verification failed: pack bytes differ from the replacement; run --in-place --revert")
+                sys.exit("verification failed: pack bytes differ from the replacement; run `wwm-files revert --in-place`")
         if target:
             with con:
                 con.execute(f"update {table} set v3=? where v0=?", (signed64(new_hash), key))
@@ -481,44 +453,47 @@ def revert_all(args: argparse.Namespace, db_path: Path) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("install_root", type=Path)
-    ap.add_argument("vfs_path", nargs="?", help="path inside the VFS, e.g. Video/login_loop_201.mp4")
-    ap.add_argument("replacement", nargs="?")
-    ap.add_argument("--apply", action="store_true", help="write the pack bytes and the database row")
-    ap.add_argument("--revert", action="store_true", help="undo a previous --apply for this path")
-    ap.add_argument("--revert-all", action="store_true", help="undo every journalled override of this install")
-    ap.add_argument("--in-place", action="store_true", help="overwrite the bytes in the base pack instead")
-    ap.add_argument("--source", choices=sorted(SOURCE_PRIORITY), help="index source of the entry to overwrite in place")
-    ap.add_argument("--stored", action="store_true", help="replacement file is already in stored form; write it as is")
-    ap.add_argument("--v5", type=int, choices=(0, 1), help="info0 patcher-file flag for the new row (default: keep existing, else 0)")
-    ap.add_argument("--new", action="store_true", help="allow a file id absent from every index and the patch db")
-    ap.add_argument("--level", type=int, default=19, help="zstd level for re-compressed entries")
-    ap.add_argument("--pack", type=int, help="patch pack number to append to (default: an empty one)")
-    ap.add_argument("--backup-dir", type=Path, default=DEFAULT_BACKUP_DIR)
-    ap.add_argument("--force", action="store_true", help="skip the game-running and database-in-use checks")
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("install_root", type=Path)
+    common.add_argument("--backup-dir", type=Path, default=DEFAULT_BACKUP_DIR)
+    common.add_argument("--force", action="store_true", help="skip the game-running and database-in-use checks")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    o = sub.add_parser("override", parents=[common], help="replace one file (dry run unless --apply)")
+    o.add_argument("vfs_path", help="path inside the VFS, e.g. Video/login_loop_201.mp4, or id:<16 hex>")
+    o.add_argument("replacement", help="decoded replacement content (see --stored)")
+    o.add_argument("--apply", action="store_true", help="write the pack bytes and the database row")
+    o.add_argument("--in-place", action="store_true", help="overwrite the bytes in the base pack instead")
+    o.add_argument("--source", choices=sorted(SOURCE_PRIORITY), help="index source of the entry to overwrite in place")
+    o.add_argument("--stored", action="store_true", help="replacement file is already in stored form; write it as is")
+    o.add_argument("--v5", type=int, choices=(0, 1), help="info0 patcher-file flag for the new row (default: keep existing, else 0)")
+    o.add_argument("--new", action="store_true", help="allow a file id absent from every index and the patch db")
+    o.add_argument("--level", type=int, default=19, help="zstd level for re-compressed entries")
+    o.add_argument("--pack", type=int, help="patch pack number to append to (default: an empty one)")
+
+    r = sub.add_parser("revert", parents=[common], help="undo an override of one file")
+    r.add_argument("vfs_path")
+    r.add_argument("--in-place", action="store_true", help="undo an in-place override")
+
+    sub.add_parser("revert-all", parents=[common], help="undo every journalled override of this install")
     args = ap.parse_args()
 
     patch_dir = args.install_root / "LocalData" / "Patch"
     db_path = patch_dir / "Patch.mpkdb"
     if not db_path.exists():
         sys.exit(f"not found: {db_path}")
-    if args.revert_all:
-        if args.vfs_path:
-            ap.error("--revert-all takes no path")
+    if args.cmd == "revert-all":
         return revert_all(args, db_path)
-    if not args.vfs_path:
-        ap.error("need a vfs path or --revert-all")
     file_id = parse_file_id(args.vfs_path)
-    if args.revert and args.in_place:
-        revert_inplace(args, db_path, inplace_journal(args.backup_dir, file_id))
-    elif args.revert:
-        revert(args, db_path, journal_path(args.backup_dir, file_id))
-    elif args.replacement and args.in_place:
+    if args.cmd == "revert":
+        if args.in_place:
+            revert_inplace(args, db_path, inplace_journal(args.backup_dir, file_id))
+        else:
+            revert(args, db_path, journal_path(args.backup_dir, file_id))
+    elif args.in_place:
         apply_inplace(args, db_path, file_id)
-    elif args.replacement:
-        apply(args, patch_dir, db_path, file_id)
     else:
-        ap.error("need a replacement file or --revert")
+        apply(args, patch_dir, db_path, file_id)
 
 
 if __name__ == "__main__":

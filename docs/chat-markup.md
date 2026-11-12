@@ -59,7 +59,7 @@ Source: decompiled `hexm/client/ui/controllers/richtext_controller.lua`,
 - `<#N>`: table `richtext_tag_composition` (10 rows): `combine_content` = [[component TAG, style row]], `goto`;
   style rows in `richtext_text_tag` / `richtext_image_tag`
 
-## Related tables (`tools/wwm_hd.py --table NAME --locale en`)
+## Related tables (`wwm-tables <hd_dir> --table NAME --locale en`)
 - `chat_emotion_icon_lib` (stickers), `chat_emotion_group`, `chat_bg_popo` (bubbles), `chat_fast_words`,
   `chat_quick_reply_lib`, `chat_channel_config`, `chat_color`, `chat_input_function`
 

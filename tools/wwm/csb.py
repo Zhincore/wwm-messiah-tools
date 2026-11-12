@@ -8,7 +8,7 @@ project file, and CSParseBinary gains two trailing fields (unresolved, empty so 
 generated from cocos2d-x's CSParseBinary_generated.h.
 
 Usage:
-  wwm_csb.py FILE.csb [--json]        print a summary (tree, resources, texts, animations) or full JSON
+  wwm-csb FILE.csb [--json]        print a summary (tree, resources, texts, animations) or full JSON
 """
 
 from __future__ import annotations

@@ -2,7 +2,7 @@
 
 Engine resources (textures, meshes, materials, models, particle systems, ...) are stored under
 GUID paths, so their file ids cannot be guessed from a readable name. The engine's repository maps
-names to GUIDs. Decoder: `tools/wwm_repository.py`. Verified on a Steam global build: 1,376,051 of
+names to GUIDs. Decoder: `tools/wwm/repository.py` (`wwm-repository`). Verified on a Steam global build: 1,376,051 of
 1,376,052 records resolve to an indexed file, and a texture identified earlier by its pixels (the chat
 emote atlas) comes out under its name with the same file id.
 
@@ -79,9 +79,9 @@ Puppet.
 
 ## Usage
 ```bash
-.venv/bin/python tools/wwm_repository.py <install> --out repository.csv
-.venv/bin/python tools/wwm_repository.py <install> --find '^puppet/vx_emoji_goose'
-.venv/bin/python tools/wwm_repository.py <install> --deps ui/dynamic_l_talk_emotion__0_0_ui
+.venv/bin/wwm-repository <install> --out repository.csv
+.venv/bin/wwm-repository <install> --find '^puppet/vx_emoji_goose'
+.venv/bin/wwm-repository <install> --deps ui/dynamic_l_talk_emotion__0_0_ui
 ```
 The CSV has `file_id, ext, guid, type, path, kind, variant, deps`; `file_id` is empty when no index
 of the install lists the file. Listed is not the same as present: a lite install indexes files whose

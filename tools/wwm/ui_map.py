@@ -4,9 +4,9 @@ Build a UI asset map for Where Winds Meet from Cocos .csb widgets, .plist atlase
 harvested asset paths.
 
 Inputs
-  --csb-dir   directory of <file_id>.csb payloads (from wwm_harvest_paths.py --save-csb)
-  --paths     harvested path list (wwm_harvest_paths.py -o)
-  --manifest  texture manifest from wwm_textures.py (to link png names to extracted files)
+  --csb-dir   directory of <file_id>.csb payloads (from wwm-harvest --save-csb)
+  --paths     harvested path list (wwm-harvest -o)
+  --manifest  texture manifest from wwm-textures (to link png names to extracted files)
   install_root  to pull .plist atlases out of the packs by id
 
 Outputs (in -o DIR)
@@ -22,30 +22,15 @@ from __future__ import annotations
 
 import argparse
 import csv
-import importlib.util
 import json
 import plistlib
 import re
 import sys
-from collections import defaultdict
 from pathlib import Path
 
-_here = Path(__file__).resolve().parent
+from . import codecs, ids, vfs
+from . import csb as csbmod
 
-
-def _load(name):
-    if name in sys.modules:
-        return sys.modules[name]
-    spec = importlib.util.spec_from_file_location(name, _here / f"{name}.py")
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[name] = mod
-    spec.loader.exec_module(mod)
-    return mod
-
-
-wt = _load("wwm_textures")
-hp = _load("wwm_harvest_paths")
-csbmod = _load("wwm_csb")
 
 
 def safe_name(path: str) -> str:
@@ -65,8 +50,8 @@ def main() -> None:
 
     # ---- names: harvested path -> file_id -> index entry
     root = Path(args.install_root)
-    entries = wt.collect_entries(root, {"res", "lt", "cache", "db"})
-    by_id: dict[int, wt.Entry] = {}
+    entries = vfs.collect_entries(root, {"res", "lt", "cache", "db"})
+    by_id: dict[int, vfs.Entry] = {}
     for e in entries:
         by_id.setdefault(e.file_id, e)
     names: dict[int, str] = {}
@@ -74,7 +59,7 @@ def main() -> None:
         p = line.strip().decode("utf-8", errors="ignore")
         if not p:
             continue
-        fid = hp.file_id(p)
+        fid = ids.file_id(p)
         if fid in by_id:
             names.setdefault(fid, p)
     with open(out / "names.csv", "w", newline="") as f:
@@ -118,18 +103,18 @@ def main() -> None:
 
     # ---- plist atlases pulled from the packs by id
     plist_ids = [(fid, p) for fid, p in names.items() if p.lower().endswith(".plist")]
-    packs: dict[str, wt.Pack] = {}
+    packs: dict[str, vfs.Pack] = {}
     frame_rows = []
     atlas_textures: dict[str, str] = {}
     for fid, p in plist_ids:
         e = by_id[fid]
-        pack = packs.setdefault(e.container, wt.Pack(e.container))
+        pack = packs.setdefault(e.container, vfs.Pack(e.container))
         if pack.blocks is not None:
             continue
         buf = pack.read(e.offset, e.size)
         if buf[:4] in (b"EZST", b"ZSTD"):
             try:
-                buf = wt.ezst_decode(buf)
+                buf = codecs.ezst_decode(buf)
             except Exception:
                 continue
         try:

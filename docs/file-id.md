@@ -1,7 +1,7 @@
 # File ids
 
 Every file in the VFS is addressed by a 64-bit id derived from its path. Packs and indexes store
-only ids, never names. Implementation: `file_id()` in `tools/wwm_harvest_paths.py`.
+only ids, never names. Implementation: `file_id()` in `tools/wwm/ids.py`.
 
 ```
 id = (MurmurHash3_x86_32(path, seed 0) << 32) | lo32
@@ -45,6 +45,6 @@ observed, and whether the engine tests the length before or after stripping the 
 - Lua: each chunk carries its `source` debug field; `LuaText/<source path>` hashes to the entry id.
   All 53k script entries are named this way.
 - Cocos UI, animations, video, audio events: paths appear in clear text inside csb, Lua and JSON
-  payloads; `tools/wwm_harvest_paths.py` harvests and hashes them.
+  payloads; `wwm-harvest` harvests and hashes them.
 - Textures, meshes, materials and other engine resources are GUID-keyed; the repository names them
-  (`resource-names.md`, `tools/wwm_repository.py`).
+  (`resource-names.md`, `wwm-repository`).

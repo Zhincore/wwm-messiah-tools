@@ -1,12 +1,12 @@
 # HD store (MTable data tables)
 
 `Package/HD/<region>/` holds the game's data tables: `MANIFEST`, `index{n}`, `data{n}`, and
-`locale/translate_words_map_<lang>[_diff]`. Reader: `tools/wwm_hd.py`. Verified by decoding all
+`locale/translate_words_map_<lang>[_diff]`. Reader: `tools/wwm/tables.py` (`wwm-tables`). Verified by decoding all
 114,171 tables (10.08 M rows) of a Steam global build.
 
 ## Container
 All files are `0xDEADBEEF` containers of independently compressed blocks. Each block has a 9-byte
-header followed by a zstd frame (see `Container` in `tools/wwm_hd.py`).
+header followed by a zstd frame (see `Container` in `tools/wwm/tables.py`).
 
 ## MANIFEST
 Payload header: `u16 v1, u16 v2, u32 unk, u32 n_tables, u32 n_shards, u32 n_extern, u32 n_other`.

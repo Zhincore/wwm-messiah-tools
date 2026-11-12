@@ -29,11 +29,11 @@ Layout:
              is relative to the offset field itself. u64 cells holding text ids resolve through it.
 
 Usage:
-  wwm_hd.py <hd_dir> --list [REGEX]                 list tables: name, rows, shards, kind
-  wwm_hd.py <hd_dir> --table NAME [-o out.json]     decode one table
-  wwm_hd.py <hd_dir> --dump DIR [--match REGEX]     decode every (matching) table into DIR
+  wwm-tables <hd_dir> --list [REGEX]                 list tables: name, rows, shards, kind
+  wwm-tables <hd_dir> --table NAME [-o out.json]     decode one table
+  wwm-tables <hd_dir> --dump DIR [--match REGEX]     decode every (matching) table into DIR
   add --locale en (or zh_cn, ja, ...) to replace text ids with their strings
-  wwm_hd.py <hd_dir> --block data5:123 -o out.bin   write one raw decompressed block
+  wwm-tables <hd_dir> --block data5:123 -o out.bin   write one raw decompressed block
 """
 
 from __future__ import annotations

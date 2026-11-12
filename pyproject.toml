@@ -1,0 +1,28 @@
+[project]
+name = "wwm-messiah-tools"
+version = "0.1.0"
+description = "Where Winds Meet (Messiah engine) asset pack tools"
+requires-python = ">=3.12"
+license = "MIT"
+dependencies = ["pillow", "pycryptodome", "zstandard", "msgpack", "lz4", "mmh3"]
+
+[project.scripts]
+wwm-atlas = "wwm.atlas:main"
+wwm-build-luac = "wwm.build_luac:main"
+wwm-csb = "wwm.csb:main"
+wwm-decode-text = "wwm.decode_text:main"
+wwm-files = "wwm.files:main"
+wwm-harvest = "wwm.harvest:main"
+wwm-lua = "wwm.lua:main"
+wwm-repository = "wwm.repository:main"
+wwm-tables = "wwm.tables:main"
+wwm-texture-index = "wwm.texture_index:main"
+wwm-textures = "wwm.textures:main"
+wwm-ui-map = "wwm.ui_map:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["tools/wwm"]

@@ -1,21 +1,21 @@
 ---
 name: wwm-extract
-description: Extract textures/images or decode obfuscated text from a Where Winds Meet install with tools/wwm_textures.py and tools/wwm_decode_text.py. Use when asked to pull assets, textures, PNGs, DDS, or to read HEX_/HEXB_ files, patchlists, or game logs.
+description: Extract textures/images or decode obfuscated text from a Where Winds Meet install with the wwm-textures and wwm-decode-text tools (package wwm, tools/wwm/). Use when asked to pull assets, textures, PNGs, DDS, or to read HEX_/HEXB_ files, patchlists, or game logs.
 ---
 
 # WWM asset extraction
 
 ## Setup (once)
 ```bash
-python3 -m venv .venv && .venv/bin/pip install pillow pycryptodome zstandard msgpack
+uv venv .venv && uv pip install --python .venv/bin/python -e .
 ```
 
 ## Textures
 1. Check space: full install ≈ 60 GB of PNG/DDS. `df -h` the target drive; never write into the repo or the game drive if it is tight.
 2. Inventory first (fast, read-only):
-   `.venv/bin/python tools/wwm_textures.py scan <install_root>`
+   `.venv/bin/wwm-textures scan <install_root>`
 3. Extract:
-   `.venv/bin/python tools/wwm_textures.py extract <install_root> -o <out> -j <cores-2>`
+   `.venv/bin/wwm-textures extract <install_root> -o <out> -j <cores-2>`
    - `--sources res,lt,cache,db` to restrict index families
    - `--container 'Patch1[0-9]\.mpk'` to restrict packs (regex on file name)
    - `--limit N` for a smoke run, `--dds` to always keep DDS
@@ -29,7 +29,7 @@ Output: `<out>/<source>/<file_id>.png` (top mip), `.dds` when Pillow cannot deco
 `decode_failed`, `parse_failed`.
 
 ## Text files
-`.venv/bin/python tools/wwm_decode_text.py <files...> [-o <dir>]`
+`.venv/bin/wwm-decode-text <files...> [-o <dir>]`
 Sniffs `HEX_` (JSON), `HEXB_` (msgpack), `CLv2` combat logs (`ClientLocalLog/**/*.bin` → JSON lines),
 SQLite `LocalDB/db_*` (msgpack XOR key → JSON lines), LZ4 `TextContent/*`, shift-1 logs
 (`game_account.log`), plain. Deps: `msgpack lz4`.

@@ -24,9 +24,9 @@ Two VFS files, found here by content, share the same path stem (same lo32 tail s
                u16 folder_index, u16 type_index, u16 dependency_count, dependency GUIDs[16 each]
 
 Usage:
-  wwm_repository.py <install_root> --out repository.csv      every record: file id, GUID, type, path, deps
-  wwm_repository.py <install_root> --find REGEX               records whose path matches
-  wwm_repository.py <install_root> --deps PATH_OR_GUID        one record with its dependencies resolved
+  wwm-repository <install_root> --out repository.csv      every record: file id, GUID, type, path, deps
+  wwm-repository <install_root> --find REGEX               records whose path matches
+  wwm-repository <install_root> --deps PATH_OR_GUID        one record with its dependencies resolved
 """
 
 from __future__ import annotations
@@ -44,9 +44,8 @@ from pathlib import Path
 import lz4.block
 import mmh3
 
-import wwm_harvest_paths as hp
+from . import codecs, vfs
 
-wt = hp.load_tool("wwm_textures")
 
 MIN_DATA_SIZE = 1 << 20
 HEX_DIGITS = frozenset(b"0123456789abcdef")
@@ -94,7 +93,7 @@ def read_entry(entry, size: int | None = None, handles: dict | None = None) -> b
     finally:
         if handles is None:
             f.close()
-    return wt.ezst_decode(raw) if size is None and raw[:4] in (b"EZST", b"ZSTD") else raw
+    return codecs.ezst_decode(raw) if size is None and raw[:4] in (b"EZST", b"ZSTD") else raw
 
 
 def is_names_file(head: bytes) -> bool:
@@ -205,7 +204,7 @@ def main() -> None:
     ap.add_argument("--deps", help="print one record (folder/name or GUID) with its dependencies")
     args = ap.parse_args()
 
-    entries = wt.collect_entries(args.install_root, {"res", "lt", "cache", "db"})
+    entries = vfs.collect_entries(args.install_root, {"res", "lt", "cache", "db"})
     repo = Repository.from_entries(entries)
     ids = {e.file_id for e in entries}
     del entries

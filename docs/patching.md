@@ -1,6 +1,6 @@
 # Patch database, content hash, replacing files
 
-Format notes behind `tools/wwm_patch_override.py`. Observed on a lite install; "confirmed" means
+Format notes behind `wwm-files` (`tools/wwm/files.py`). Observed on a lite install; "confirmed" means
 checked in game.
 
 ## Patch.mpkdb
@@ -36,7 +36,7 @@ for each chunk c of the stored bytes:
     a, b = MurmurHash3_x64_128(c, seed 0)    # two u64 halves
     h ^= a ^ b
 ```
-Reproduced on 20 real rows. `content_hash()` in `tools/wwm_patch_override.py`.
+Reproduced on 20 real rows. `content_hash()` in `tools/wwm/ids.py`.
 
 ## Start-up order
 The patcher is Lua (`LuaText/patch/...`) and runs before the game proper:
@@ -58,10 +58,10 @@ An entry is stored raw (MP4, Wwise audio, texture containers), as `EZST`, or as 
 "EZST" u32 raw_size payload     payload[:min(floor16(len), 256)] AES-256-ECB, then one zstd frame
 "ZSTD" u32 raw_size payload     same, not encrypted
 ```
-The AES key is fixed (constant in `tools/wwm_textures.py`). `ezst_encode()` builds either form.
+The AES key is fixed (constant in `tools/wwm/codecs.py`). `ezst_encode()` builds either form.
 
 Lua scripts (`LuaText/<path>.lua`) use their own wrapper, with no magic: `u32le decoded_size` + raw
-LZ4 block, decoding to a Lua 5.4 chunk with the game's opcode numbering. `wwm_patch_override.py`
+LZ4 block, decoding to a Lua 5.4 chunk with the game's opcode numbering. `wwm-files`
 detects it on the original entry and re-wraps the replacement, which may be bytecode or plain source
 (whether the engine's loader accepts source text is untested). LZ4 cannot be padded, so in place
 needs an exact stored size; use the database route.
@@ -72,7 +72,7 @@ needs an exact stored size; use the database route.
 - **In place.** Overwrite the stored bytes inside the pack. The new stored form must be exactly as
   long as the old one, because neighbours and index offsets do not move. When the overwritten entry is
   itself a patch-database row (a `Patch{n}.mpk` pack targeted via `db0`/`db1`), its `v3` content hash
-  is updated in place to match the new bytes, so the row does not go stale; `--in-place --revert`
+  is updated in place to match the new bytes, so the row does not go stale; `revert --in-place`
   restores both the bytes and the hash. Base-pack (`res`/`lt`) in-place edits have no row to update,
   but patcher-class files are re-verified against the server patchlist on boot and may be restored.
 

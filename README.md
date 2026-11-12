@@ -10,11 +10,11 @@ packs. The v1 code paths are kept for reference; everything WWM-specific is new.
 ## Quick start
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install pillow pycryptodome zstandard msgpack lz4 mmh3
-.venv/bin/python tools/wwm_textures.py scan    /path/to/wwm
-.venv/bin/python tools/wwm_textures.py extract /path/to/wwm -o /big/disk/wwm_textures -j 8
+uv venv .venv && uv pip install --python .venv/bin/python -e .   # or: python3 -m venv .venv && .venv/bin/pip install -e .
+.venv/bin/wwm-textures scan    /path/to/wwm
+.venv/bin/wwm-textures extract /path/to/wwm -o /big/disk/wwm_textures -j 8
 # interrupted? continue where it stopped:
-.venv/bin/python tools/wwm_textures.py extract /path/to/wwm -o /big/disk/wwm_textures --resume
+.venv/bin/wwm-textures extract /path/to/wwm -o /big/disk/wwm_textures --resume
 ```
 
 Output: `<out>/<source>/<file_id>.png` (top mip), `.dds` where Pillow cannot decode the
@@ -48,7 +48,7 @@ offsets do not apply: walk the blocks in order and match them to entries by size
 
 ### EZST
 `"EZST" u32 raw_size payload`. The first `min(floor16(len), 256)` payload bytes are
-AES-256-ECB encrypted with a fixed key (constant in `tools/wwm_textures.py`, from
+AES-256-ECB encrypted with a fixed key (constant in `tools/wwm/codecs.py`, from
 [ArArgon/yysls-re](https://github.com/ArArgon/yysls-re)); the rest is plain. The
 decrypted payload is one zstd frame. `ZSTD` magic = same header, unencrypted.
 
@@ -85,7 +85,7 @@ event batch; events are `[event_type, tick, ?, subtype, payload...]` (combat/pos
 with the same NetEase key, no base64/zlib (chat history, UI/red-dot state, caches).
 `LocalData/TextContent/*`: LZ4 frames around JSON (character preset variables).
 `Package/Other/{enc_c,enc_g,dev_i}.bin`: `HEX_` around plain text / JSON (CPU/GPU block and tier lists).
-`tools/wwm_decode_text.py` handles all of these by sniffing content.
+`wwm-decode-text` handles all of these by sniffing content.
 
 ### UI layer (Cocos2d-x)
 UI is Cocos Studio: `UIScript/*.csb` widget trees (FlatBuffers, stock `CSParseBinary` schema plus a
@@ -98,20 +98,20 @@ Atlas textures are GUID-keyed; the repository maps `ui/<name>_0_0_ui` to them (b
 Engine resources live at `xx/<guid>[.6]` (`xx` = first two characters of the GUID; `.6` = texture). Two
 files hold the catalogue: a names file (folders, type names, index roots, block table) and a data file
 (index pages plus LZ4 blocks of 64 records: GUID, name, folder, type, dependency GUIDs). 1.38 M records;
-`tools/wwm_repository.py` dumps them with file ids. Layout: `docs/resource-names.md`.
+`wwm-repository` dumps them with file ids. Layout: `docs/resource-names.md`.
 
 ### Lua
 Scripts are `LuaText` blobs: `u32 decoded_size` + raw LZ4 block → stock Lua 5.4 chunk whose opcode
-table has 17 inserted opcodes (table in `tools/wwm_lua.py`). `tools/wwm_lua.py` unpacks, remaps to stock
+table has 17 inserted opcodes (table in `tools/wwm/lua.py`). `wwm-lua` unpacks, remaps to stock
 numbering and writes `.luac` named from the chunk's `source` field (`hexm/...`, `Sunshine/...`);
 pass `--unluac unluac.jar` to decompile to `.lua`. Differences from stock 5.4 that a decompiler must
 know: `MMBIN*` C operand is the metamethod index + 1 (not an opcode), generic `for` reserves 5 internal
 registers, `NEWTABLE` variants have no `EXTRAARG`. `tools/unluac-messiah.patch` applies these to unluac
-(viruscamp/unluac mirror, commit 9c59af4); build it and run with `-Dunluac.tfor54slots=5` (wwm_lua does).
+(viruscamp/unluac mirror, commit 9c59af4); build it and run with `-Dunluac.tfor54slots=5` (`wwm-lua` does).
 
 ### Data tables (HD store)
 `Package/HD/<region>/`: `MANIFEST`, `index{n}`, `data{n}` hold ~114k named tables (`MTable`), read by
-`tools/wwm_hd.py`. All three are `0xDEADBEEF` containers of zstd blocks. Full layout: `docs/hd-store.md`.
+`wwm-tables`. All three are `0xDEADBEEF` containers of zstd blocks. Full layout: `docs/hd-store.md`.
 - MANIFEST: table names + 32-byte records `rows, shard_count, schema_ptr, patch_schema_ptr, hash, 0,
   first_shard, kind`, then a shard array of `(ptr, patch_ptr)`; `ptr = (block << 16) | index file number`.
 - Schema block: field-name list; a cell's field id is its position.
@@ -126,31 +126,37 @@ registers, `NEWTABLE` variants have no `EXTRAARG`. `tools/unluac-messiah.patch` 
   (shard = `1 + id % (blocks - 1)`), `--locale en` resolves them.
 
 ```bash
-.venv/bin/python tools/wwm_hd.py <install>/Package/HD/oversea --list '^chat_'
-.venv/bin/python tools/wwm_hd.py <install>/Package/HD/oversea --table chat_emotion_frame_data --locale en
-.venv/bin/python tools/wwm_hd.py <install>/Package/HD/oversea --dump OUT --locale en   # ~1.5 GB JSON
+.venv/bin/wwm-tables <install>/Package/HD/oversea --list '^chat_'
+.venv/bin/wwm-tables <install>/Package/HD/oversea --table chat_emotion_frame_data --locale en
+.venv/bin/wwm-tables <install>/Package/HD/oversea --dump OUT --locale en   # ~1.5 GB JSON
 ```
 
 ### Rich text / chat markup
 See `docs/chat-markup.md` (tag grammar, components, colour codes, emotes).
 
 ## Layout
-- `tools/wwm_textures.py` — texture/image extractor (Python)
-- `tools/wwm_decode_text.py` — decoder for `HEX_`/`HEXB_` wrappers, SQLite LocalDB, CLv2 logs
-- `tools/wwm_harvest_paths.py` — harvest cleartext asset paths from payloads, hash them to file ids, capture csb
-- `tools/wwm_csb.py` — Cocos csb decoder (`cocos_csb_schema.json` generated from cocos2d-x headers)
-- `tools/wwm_ui_map.py` — UI asset map: csb trees, texts, timelines, atlases, recovered names
-- `tools/wwm_atlas.py` — cut plist atlas frames, build GIFs from frame sequences
-- `tools/wwm_lua.py` — Lua bytecode dump (LuaText → stock 5.4 → optional unluac); `tools/unluac-messiah.patch`
-- `tools/wwm_hd.py` — HD store data tables (MANIFEST/index/data) + locale text
-- `tools/wwm_texture_index.py` — header-only texture census
-- `tools/wwm_repository.py` — resource repository: name ↔ GUID ↔ file id, types, dependencies
-- `tools/wwm_patch_override.py` — experimental: replace one VFS file, either through a `Patch.mpkdb` entry or
+Python package `wwm` in `tools/wwm/` (`pyproject.toml`); each tool is a console script
+`wwm-<name>` and also runs as `python -m wwm.<module>`.
+- `wwm.ids` / `wwm.codecs` / `wwm.vfs` — shared layers: file id and content hash; EZST/ZSTD/LuaText
+  wrappers; index sources (`collect_entries`), `Entry`, `Pack` (mmapped packs, block-pack walking)
+- `wwm-textures` — texture/image extractor
+- `wwm-texture-index` — header-only texture census
+- `wwm-decode-text` — decoder for `HEX_`/`HEXB_` wrappers, SQLite LocalDB, CLv2 logs
+- `wwm-harvest` — harvest cleartext asset paths from payloads, hash them to file ids, capture csb
+- `wwm-csb` — Cocos csb decoder (`cocos_csb_schema.json` generated from cocos2d-x headers)
+- `wwm-ui-map` — UI asset map: csb trees, texts, timelines, atlases, recovered names
+- `wwm-atlas` — cut plist atlas frames, build GIFs from frame sequences
+- `wwm-lua` — Lua bytecode dump (LuaText → stock 5.4 → optional unluac); `tools/unluac-messiah.patch`
+- `wwm-build-luac` — build `lua`/`luac` 5.4 with the game's opcode numbering
+- `wwm-tables` — HD store data tables (MANIFEST/index/data) + locale text
+- `wwm-repository` — resource repository: name ↔ GUID ↔ file id, types, dependencies
+- `wwm-files` — experimental: replace one VFS file (`override`), either through a `Patch.mpkdb` entry or
   `--in-place` in its pack; EZST/ZSTD entries are re-compressed (in place: to the exact stored size),
-  everything is journalled; `--revert` restores one file, `--revert-all` every override of the install. Confirmed in game (lite install): in place, a raw
-  MP4 (login video) and an EZST animation padded with empty zstd blocks; through `Patch.mpkdb`, an EZST
-  animation whose existing row was repointed. Files the patcher opens before it registers patch entries
-  (the login video) only respond to the in-place route.
+  LuaText entries re-wrapped; everything is journalled; `revert` restores one file, `revert-all` every
+  override of the install. Confirmed in game (lite install): in place, a raw MP4 (login video) and an
+  EZST animation padded with empty zstd blocks; through `Patch.mpkdb`, an EZST animation whose existing
+  row was repointed. Files the patcher opens before it registers patch entries (the login video) only
+  respond to the in-place route.
 - `docs/` — format notes: `file-id.md`, `hd-store.md`, `patching.md`, `resource-names.md`, `chat-markup.md`
 - `mpk/` — Rust: v1 reader (Diablo Immortal era) and v3 `.mpkinfo` parser
 - `texture/` — Rust: EZST codec, texture container parser, PNG/DDS conversion

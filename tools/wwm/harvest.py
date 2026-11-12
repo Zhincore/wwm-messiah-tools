@@ -8,107 +8,30 @@ Serialized UI/scene objects reference other assets by path ("UIScript/x.csb",
 against the manifest, which names otherwise anonymous textures.
 
 Usage:
-  wwm_harvest_paths.py <install_root> -o paths.txt [-j N] [--max-size BYTES] [--save-csb DIR]
-  wwm_harvest_paths.py --match paths.txt --manifest manifest.csv -o names.csv
+  wwm-harvest <install_root> -o paths.txt [-j N] [--max-size BYTES] [--save-csb DIR]
+  wwm-harvest --match paths.txt --manifest manifest.csv -o names.csv
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
-import importlib.util
 import multiprocessing as mp
 import os
 import re
 import struct
-import sys
 from collections import defaultdict
 from pathlib import Path
 
-_here = Path(__file__).resolve().parent
+from . import codecs, vfs
+from .ids import file_id
 
 
-def load_tool(name: str):
-    """Import a sibling tool module once, by file path (tools/ is not a package)."""
-    if name in sys.modules:
-        return sys.modules[name]
-    spec = importlib.util.spec_from_file_location(name, _here / f"{name}.py")
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[name] = mod
-    spec.loader.exec_module(mod)
-    return mod
-
-
-wt = load_tool("wwm_textures")
 
 PATH_RE = re.compile(rb"[A-Za-z0-9_][A-Za-z0-9_\-./@ ]{3,200}\.[a-z0-9]{1,6}")
 EXTS = {b"png", b"plist", b"csb", b"json", b"lua", b"ttf", b"fnt", b"atlas", b"skel", b"mp4", b"ogg",
         b"wav", b"bnk", b"wem", b"jpg", b"astc", b"pvr", b"ktx", b"dds", b"tga", b"xml", b"csv", b"txt",
         b"prefab", b"mesh", b"skin", b"anim", b"mat", b"fx", b"shader", b"scene", b"bin", b"dat", b"pb"}
-
-
-# --------------------------------------------------------------------------
-# file_id (docs: ArArgon/yysls-re file-id.md)
-# --------------------------------------------------------------------------
-
-
-def murmur3_32(data: bytes, seed: int = 0) -> int:
-    c1, c2 = 0xCC9E2D51, 0x1B873593
-    h = seed
-    n = len(data) // 4 * 4
-    for i in range(0, n, 4):
-        k = struct.unpack_from("<I", data, i)[0]
-        k = (k * c1) & 0xFFFFFFFF
-        k = ((k << 15) | (k >> 17)) & 0xFFFFFFFF
-        k = (k * c2) & 0xFFFFFFFF
-        h ^= k
-        h = ((h << 13) | (h >> 19)) & 0xFFFFFFFF
-        h = (h * 5 + 0xE6546B64) & 0xFFFFFFFF
-    k = 0
-    tail = data[n:]
-    if len(tail) >= 3:
-        k ^= tail[2] << 16
-    if len(tail) >= 2:
-        k ^= tail[1] << 8
-    if len(tail) >= 1:
-        k ^= tail[0]
-        k = (k * c1) & 0xFFFFFFFF
-        k = ((k << 15) | (k >> 17)) & 0xFFFFFFFF
-        k = (k * c2) & 0xFFFFFFFF
-        h ^= k
-    h ^= len(data)
-    h ^= h >> 16
-    h = (h * 0x85EBCA6B) & 0xFFFFFFFF
-    h ^= h >> 13
-    h = (h * 0xC2B2AE35) & 0xFFFFFFFF
-    h ^= h >> 16
-    return h
-
-
-def strip_ext(p: bytes) -> bytes:
-    dot, slash = p.rfind(b"."), p.rfind(b"/")
-    return p[:dot] if dot > slash else p
-
-
-def tail_sig(b: bytes) -> int:
-    n = len(b)
-    if n == 0:
-        return 0
-    if n == 1:
-        return (b[0] << 24) | n
-    if n == 2:
-        return (b[1] << 24) | (b[0] << 16) | n
-    return (b[n - 1] << 24) | (b[n - 2] << 16) | (b[n - 3] << 8) | (n & 0xFF)
-
-
-def file_id(path: str) -> int:
-    p = path.encode("utf-8")
-    stripped = strip_ext(p)
-    if len(stripped) in (39, 41) and len(stripped) > 2 and stripped[2:3] == b"/":
-        lo = struct.unpack(">I", stripped[3:7])[0]
-    else:
-        lo = tail_sig(stripped)
-    return (murmur3_32(p) << 32) | lo
 
 
 # --------------------------------------------------------------------------
@@ -140,7 +63,7 @@ def harvest_pack(args: tuple[str, list, int, str | None]) -> tuple[str, set[byte
     found: set[bytes] = set()
     saved = 0
     try:
-        pack = wt.Pack(container, entries)
+        pack = vfs.Pack(container, entries)
     except OSError:
         return container, found, saved
     if pack.blocks is not None:
@@ -161,10 +84,10 @@ def harvest_pack(args: tuple[str, list, int, str | None]) -> tuple[str, set[byte
     for entry, buf in payloads:
         if buf[:4] in (b"EZST", b"ZSTD"):
             try:
-                buf = wt.ezst_decode(buf)
+                buf = codecs.ezst_decode(buf)
             except Exception:
                 continue
-        if buf[:4] == wt.TEX_MAGIC or buf[:4] in (b"RIFF", b"BKHD", b"ZZZ4", b"LZMA", b".MES"):
+        if buf[:4] == vfs.TEX_MAGIC or buf[:4] in (b"RIFF", b"BKHD", b"ZZZ4", b"LZMA", b".MES"):
             continue
         if save_dir and entry is not None and looks_like_csb(buf):
             Path(save_dir, f"{entry.file_id:016x}.csb").write_bytes(buf)
@@ -180,7 +103,7 @@ def harvest_pack(args: tuple[str, list, int, str | None]) -> tuple[str, set[byte
 
 def cmd_harvest(args: argparse.Namespace) -> None:
     root = Path(args.install_root)
-    entries = wt.collect_entries(root, {"res", "lt", "cache", "db"})
+    entries = vfs.collect_entries(root, {"res", "lt", "cache", "db"})
     by_container: dict[str, list] = defaultdict(list)
     for e in entries:
         by_container[e.container].append(e)

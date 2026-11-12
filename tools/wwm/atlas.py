@@ -4,18 +4,17 @@ Cut sprite frames out of a Cocos .plist atlas stored in the packs, and optionall
 animated GIFs from numbered frame sequences (e.g. ui_emotion_12_00000 .. 00004).
 
 Usage:
-  wwm_atlas.py <install_root> --plist UIScript/plist/foo.plist -o OUT [--gif] [--fps 10]
-  wwm_atlas.py <install_root> --list PATTERN --paths paths.txt   # find plists by name
+  wwm-atlas <install_root> --plist UIScript/plist/foo.plist -o OUT [--gif] [--fps 10]
+  wwm-atlas <install_root> --list PATTERN --paths paths.txt   # find plists by name
 
 The plist's textureFileName is resolved by hashing candidate paths next to the plist.
-The texture is a game texture container (see wwm_textures.py); frames are cut using the
+The texture is a game texture container (see wwm.textures); frames are cut using the
 plist rects (rotated frames are un-rotated) and written as <frame>.png.
 """
 
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import io
 import plistlib
 import re
@@ -25,21 +24,8 @@ from pathlib import Path
 
 from PIL import Image
 
-_here = Path(__file__).resolve().parent
+from . import codecs, ids, textures, vfs
 
-
-def _load(name):
-    if name in sys.modules:
-        return sys.modules[name]
-    spec = importlib.util.spec_from_file_location(name, _here / f"{name}.py")
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[name] = mod
-    spec.loader.exec_module(mod)
-    return mod
-
-
-wt = _load("wwm_textures")
-hp = _load("wwm_harvest_paths")
 
 SEQ_RE = re.compile(r"^(.*?)[_-]?(\d{2,6})\.png$")
 
@@ -50,21 +36,21 @@ def parse_rect(s: str) -> tuple[int, int, int, int]:
 
 
 def read_entry(by_id: dict, path: str) -> tuple[bytes, str] | None:
-    e = by_id.get(hp.file_id(path))
+    e = by_id.get(ids.file_id(path))
     if e is None:
         return None
-    pack = wt.Pack(e.container)
+    pack = vfs.Pack(e.container)
     buf = pack.read(e.offset, e.size)
     if buf[:4] in (b"EZST", b"ZSTD"):
-        buf = wt.ezst_decode(buf)
+        buf = codecs.ezst_decode(buf)
     return buf, path
 
 
 def texture_image(buf: bytes) -> Image.Image:
-    if buf[:4] == wt.TEX_MAGIC:
-        tex = wt.parse_texture(buf)
+    if buf[:4] == vfs.TEX_MAGIC:
+        tex = textures.parse_texture(buf)
         top = max((m for m in tex.mips if m.data), key=lambda m: m.w * m.h)
-        png = wt.to_png(tex.fmt, top.w, top.h, top.data)
+        png = textures.to_png(tex.fmt, top.w, top.h, top.data)
         if png is None:
             raise ValueError(f"cannot decode texture format {tex.fmt}")
         return Image.open(io.BytesIO(png)).convert("RGBA")
@@ -95,7 +81,7 @@ def main() -> None:
         ap.error("--plist and -o are required")
 
     root = Path(args.install_root)
-    entries = wt.collect_entries(root, {"res", "lt", "cache", "db"})
+    entries = vfs.collect_entries(root, {"res", "lt", "cache", "db"})
     by_id = {}
     for e in entries:
         by_id.setdefault(e.file_id, e)
@@ -116,9 +102,9 @@ def main() -> None:
     if tex is None and args.texture_id:
         e = by_id.get(int(args.texture_id, 16))
         if e:
-            pack = wt.Pack(e.container)
+            pack = vfs.Pack(e.container)
             buf = pack.read(e.offset, e.size)
-            tex = (wt.ezst_decode(buf) if buf[:4] in (b"EZST", b"ZSTD") else buf, f"id:{args.texture_id}")
+            tex = (codecs.ezst_decode(buf) if buf[:4] in (b"EZST", b"ZSTD") else buf, f"id:{args.texture_id}")
     if tex is None:
         sys.exit(f"texture not found, tried: {candidates}; pass --texture-id (textures are GUID-keyed)")
     print(f"texture resolved as {tex[1]}")

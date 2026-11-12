@@ -4,3 +4,8 @@ unpack/
 .venv/
 venv/
 __pycache__/
+
+# build_luac work dir and binaries
+/build/
+/lua_custom
+/luac_custom
