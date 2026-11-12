@@ -130,6 +130,19 @@ per-launch hash) untouched. Not yet confirmed in game.
   deletes `LocalData/Cache` and `shader.version` (shader cache), not patch data.
 - The developer loose-file loader (`MDebug.EnableDebugLoader`, `MPKOverlay.tag`) is enabled only on
   non-publish branches or with a signed debug configuration.
+- Shipped code reads loose files and compiles source: `MPatch.GetRawDataInSystem("LocalData", rel)`,
+  `io.open` on absolute paths, `load(text, chunkname)`. `game_setup.setup_gm_path()` (unconditional, in
+  `setup_config`) appends `LocalData/level_bot_records/gm_code_lua/?.lua` to `package.path` when that folder
+  exists; it belongs to the level-bot autotest recorder, and `gm_require` (GM = game-master debug
+  commands, modules stripped from release packs) falls back to loading source from it. Every
+  `gm_require` call site is behind a debug flag.
+- Lifecycle hooks for code loaded early: `G.net_dispatcher` events `E_ARRIVE_LOGIN_UI` (login window,
+  after set-up and hotfixes), `E_ENTER_GAME_STATE` (`login_states/game.lua`); the local avatar dispatches
+  `E_LOCAL_AVATAR_CREATED`. `main.main_after_hotfix` is the end of start-up. Hotfix fetches repeat later.
+- Client checks visible in Lua: `MHexAC` (module base address of the executable, prologue bytes of
+  `QueryPerformanceCounter`/`GetTickCount` and similar via `GetText`, raw-input validity) and `MQSec`
+  (loaded on Windows 10 1809+), feeding speed/invincibility/input inspection that reports to the server
+  and can record video. No Lua script-integrity check was found in the dump.
 
 ## Not built
 - Texture replacement: the container holds one EZST block per mip plus size fields, so it has to be
