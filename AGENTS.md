@@ -18,7 +18,7 @@ Python package `wwm` in `tools/wwm/` (`pyproject.toml`, editable install in `.ve
 - `build_luac.py` — lua/luac 5.4 with the game's opcode numbering
 - `tables.py` — HD store data tables: `Store.table(name)`, `Locale` text ids; `--list/--table/--dump`
 - `repository.py` — resource repository: `Repository.records()`, `guid_file_id()`; names for GUID-keyed files
-- `files.py` (`wwm-files override|revert|revert-all`) — writes to the install (patch pack + `Patch.mpkdb`
+- `files.py` (`wwm-files export|override|revert|revert-all`) — `export` is read-only; the rest write to the install (patch pack + `Patch.mpkdb`
   row); only run when the user asks, game closed
 - `mpk/` — Rust: v3 `.mpkinfo` parser (`v3_parser.rs`), legacy v1 reader
 - `texture/` — Rust: `ezst`, `container`, `convert` (PNG via texture2ddecoder, DDS DX10); CLI converts payload files

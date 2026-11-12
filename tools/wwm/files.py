@@ -11,6 +11,7 @@ Usage:
   wwm-files override <install_root> <vfs_path> <replacement_file> --apply
   wwm-files revert <install_root> <vfs_path>
   wwm-files revert-all <install_root>                                      undo every override, newest first
+  wwm-files export <install_root> <vfs_path> <out_file>                    decoded content, as the engine resolves it
 
 Add --in-place to overwrite the file's stored bytes inside its pack instead (needed for files the
 patcher opens before patch entries are registered, e.g. the login video). The stored replacement
@@ -314,6 +315,36 @@ def wrapper_of(stored: bytes) -> bytes | None:
     return LUATEXT if codecs.luatext_decode(stored) is not None else None
 
 
+def export(args: argparse.Namespace, file_id: int) -> None:
+    """Write the decoded content of the entry the engine resolves first (patch db before packages)."""
+    entries, n_hits = find_entries(args.install_root, file_id)
+    if args.source:
+        entries = [e for e in entries if e.source == args.source]
+    if not entries:
+        if n_hits:
+            sys.exit("this file lives only in block (EZST) packs with no physical offset; cannot export it")
+        sys.exit("no index entry found for this file (check the id; path hashing can miss reconstructed names)")
+    entry = entries[0]
+    stored = read_stored(entry)
+    for other in entries[1:]:
+        if other.source != entry.source and read_stored(other) != stored:
+            print(f"note: {other.container} ({other.source}) holds different bytes; pick it with --source {other.source}")
+    wrapper = wrapper_of(stored)
+    if args.stored or wrapper is None:
+        data = stored
+    elif wrapper == LUATEXT:
+        data = codecs.luatext_decode(stored)
+    else:
+        data = codecs.ezst_decode(stored)
+    Path(args.output).write_bytes(data)
+    form = "stored" if args.stored else (wrapper or b"raw").decode()
+    print(f"file id      {file_id:016x} ({args.vfs_path})")
+    print(f"source       {entry.container} ({entry.source}) offset {entry.offset} size {entry.size}")
+    print(f"wrote        {args.output}: {len(data)} bytes ({form}{', decoded' if wrapper and not args.stored else ''})")
+    if wrapper == LUATEXT and not args.stored:
+        print("note: Lua bytecode in the game's opcode numbering; `wwm-lua` remaps to stock 5.4 for decompiling")
+
+
 def inplace_journal(backup_dir: Path, file_id: int) -> Path:
     return backup_dir / f"{file_id:016x}.inplace.json"
 
@@ -476,6 +507,12 @@ def main() -> None:
     r.add_argument("--in-place", action="store_true", help="undo an in-place override")
 
     sub.add_parser("revert-all", parents=[common], help="undo every journalled override of this install")
+
+    x = sub.add_parser("export", parents=[common], help="write a file's decoded content (read-only)")
+    x.add_argument("vfs_path", help="path inside the VFS, or id:<16 hex>")
+    x.add_argument("output", help="file to write")
+    x.add_argument("--source", choices=sorted(SOURCE_PRIORITY), help="export the copy from this index source")
+    x.add_argument("--stored", action="store_true", help="write the stored form (still wrapped) instead")
     args = ap.parse_args()
 
     patch_dir = args.install_root / "LocalData" / "Patch"
@@ -485,6 +522,8 @@ def main() -> None:
     if args.cmd == "revert-all":
         return revert_all(args, db_path)
     file_id = parse_file_id(args.vfs_path)
+    if args.cmd == "export":
+        return export(args, file_id)
     if args.cmd == "revert":
         if args.in_place:
             revert_inplace(args, db_path, inplace_journal(args.backup_dir, file_id))

@@ -66,6 +66,10 @@ detects it on the original entry and re-wraps the replacement, which may be byte
 (whether the engine's loader accepts source text is untested). LZ4 cannot be padded, so in place
 needs an exact stored size; use the database route.
 
+`wwm-files export <install> <vfs_path> <out>` writes the decoded content of the copy the engine resolves
+first (patch-database rows before packages); `--stored` keeps the wrapper, `--source` picks another copy.
+Edit that file and pass it to `wwm-files override`, which re-wraps it like the original.
+
 ## Two ways to replace a file
 - **Database route.** Append the new stored bytes to a patch pack and insert or repoint the `info0`
   row. No size limit; base packs untouched. Does not reach files opened before registration.

@@ -150,7 +150,8 @@ Python package `wwm` in `tools/wwm/` (`pyproject.toml`); each tool is a console 
 - `wwm-build-luac` — build `lua`/`luac` 5.4 with the game's opcode numbering
 - `wwm-tables` — HD store data tables (MANIFEST/index/data) + locale text
 - `wwm-repository` — resource repository: name ↔ GUID ↔ file id, types, dependencies
-- `wwm-files` — experimental: replace one VFS file (`override`), either through a `Patch.mpkdb` entry or
+- `wwm-files` — `export` writes a file's decoded content as the engine resolves it (patch db before
+  packages), ready to edit and feed back. Experimental: replace one VFS file (`override`), either through a `Patch.mpkdb` entry or
   `--in-place` in its pack; EZST/ZSTD entries are re-compressed (in place: to the exact stored size),
   LuaText entries re-wrapped; everything is journalled; `revert` restores one file, `revert-all` every
   override of the install. Confirmed in game (lite install): in place, a raw MP4 (login video) and an
