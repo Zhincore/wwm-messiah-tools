@@ -39,17 +39,35 @@ for each chunk c of the stored bytes:
 Reproduced on 20 real rows. `content_hash()` in `tools/wwm/ids.py`.
 
 ## Start-up order
-The patcher is Lua (`LuaText/patch/...`) and runs before the game proper:
+The patcher is Lua (`LuaText/patch/...`) and runs before the game proper (game executable):
 
-1. Load stage: opens the packs and verifies the "essential" list (the `LT{n}` packs, which hold the
-   scripts).
-2. The login screen appears; its loop video is opened here.
-3. Finish stage: patch entries from `Patch.mpkdb` are registered with the engine.
+1. `checker.check`: device and shader set-up (`aftercheck`), writes `LocalData/EnterGameFail.tag`.
+2. `launcher.fetch_patch_patch` (`patch/patch_patcher.lua`): fetches the server patchlist, verifies every
+   patcher-class file (`common.filelist`, `info0.v5 = 1`) against the server hash, refetches mismatches into
+   the patch layer, registers only those entries, then unloads every Lua module and reloads. Patcher-class
+   scripts therefore heal themselves on each launch.
+3. `patch_main.init` → Patcher stages: pre-check, patchlist, load (database validation, verify of the
+   `verifying` packs and of the essential list), download, finish. The login loop video is opened here.
+   The load stage registers all `Patch.mpkdb` entries with the engine.
+4. `Patcher:enter_main` unloads every module except the patcher's context and runs `main.lua`.
 
-Consequence: a file the patcher opens before step 3 is read from its base pack whatever the database
-says. A database override of the login video has no effect; overwriting its bytes in the base pack
-does (confirmed). Per-launch verification covers the essential list only; patchlist hashes of other
-files are checked on patch and repair, so a repair restores overwritten bytes.
+Consequence: a file the patcher opens before step 3 registers the database is read from its base pack
+whatever the database says. A database override of the login video has no effect; overwriting its bytes
+in the base pack does (confirmed).
+
+Per-launch verification (essential list, `essential.txt`, hash checked against `essential_list_md5` in
+`meta`) hashes every `LT*.mpk` / `LT*.mpkinfo` as a whole file, plus the HD store files and the
+TinyFiles/MpkCached/MpkSorted indexes. `Resources.mpk` is not on it. Any byte changed in an LT pack marks
+the pack corrupt and it is downloaded again; patchlist hashes of other files are checked on patch and
+repair, so a repair restores overwritten bytes.
+
+Database validation in the load stage runs `PRAGMA integrity_check` and a `GROUP BY` over `info0`/`info1`.
+Any SQLite error there counts as an invalid database: `Patch.mpkdb.backup` is restored if it exists
+(the finish stage copies and validates it at the end of every completed patch run), otherwise the
+database and every patch pack are deleted (full download). Observed on a lite
+install under wine on an NTFS (fuseblk) mount: "unable to open database file" from that query on a
+healthy database, on every launch with a full database (cause unconfirmed; the game points SQLite's
+temp directory at the Patch folder).
 
 ## Stored forms
 An entry is stored raw (MP4, Wwise audio, texture containers), as `EZST`, or as `ZSTD`:
@@ -89,6 +107,29 @@ Edit that file and pass it to `wwm-files override`, which re-wraps it like the o
   size as u32 or u64) give lengths covering every residue modulo 3, so every gap except 1 and 4 bytes fits. Of 113 real EZST
   entries re-encoded this way, 72 fit; the rest (mostly meshes) were stored tighter than zstd level
   22 reaches and need the database route. One padded animation is confirmed in game.
+
+## Lua script overrides
+Game code is required after `enter_main`, when every database entry is registered, so a `Patch.mpkdb` row
+for `LuaText/<module path>.lua` takes precedence over the LT copy and leaves the LT pack (and its
+per-launch hash) untouched. Not yet confirmed in game.
+
+- Stored form: LuaText (see above). The engine compiles Lua source at runtime (`load`, mode `bt`, used for
+  server hotfixes), but whether the module loader accepts source text instead of bytecode is untested.
+- Avoid patcher-class scripts (`v5 = 1`; `launcher`, `checker`, `patch/*` and modules the patcher
+  requires: `hexm.client.game_setup`, `hexm.common.hex_object`, `hexm.client.manager.timer_manager`, ...).
+  They are re-verified against the server each launch.
+- Load order in `main.main`: `hexm.common.strict` (first line of `main.lua`, 25 lines, defines `global`),
+  `hexm.client.trace`, `functions`, `hexm.client.util.global_functions`, `hexm.client.G`, `game_setup`
+  managers, then the hotfix manager.
+- Server hotfixes are Lua source run with `util.eval_hotfix` after set-up; they replace individual
+  functions on classes (`function Cls:method` on the required module) and update data tables
+  (`G.hotfix_manager:update_table`). A hotfix redefining a function also replaces that function in an
+  overridden module. They are cached as plain source in `LocalData/LocalDB/db_mp` (keys
+  `hotfix_<timestamp>`; `wwm-decode-text` reads it).
+- A script error before `main` finishes leaves `EnterGameFail.tag`; on the next launch `checker`
+  deletes `LocalData/Cache` and `shader.version` (shader cache), not patch data.
+- The developer loose-file loader (`MDebug.EnableDebugLoader`, `MPKOverlay.tag`) is enabled only on
+  non-publish branches or with a signed debug configuration.
 
 ## Not built
 - Texture replacement: the container holds one EZST block per mip plus size fields, so it has to be
