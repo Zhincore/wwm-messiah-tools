@@ -128,26 +128,55 @@ def refuse_if_in_use(db_path: Path, force: bool) -> None:
         sys.exit(f"patch database looks in use ({reason}); close the game, or pass --force if it is closed")
 
 
+INFO1_XOR_KEY = 1234927562014348681
+
+
+def read_info0_flags(db_path: Path, file_id: int) -> tuple[int, int] | None:
+    """(v4, v5) of the existing info0 row for this id, or None. v5 is the patcher-file flag."""
+    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as ro:
+        r = ro.execute("select v4, v5 from info0 where v0=?", (signed64(file_id),)).fetchone()
+    return (r[0], r[1]) if r else None
+
+
+def db_has_info1(db_path: Path, file_id: int) -> bool:
+    """Whether a background (info1) row exists; its key is the file id XORed with INFO1_XOR_KEY."""
+    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as ro:
+        r = ro.execute("select 1 from info1 where v0=?", (signed64(file_id ^ INFO1_XOR_KEY),)).fetchone()
+    return r is not None
+
+
 def journal_path(backup_dir: Path, file_id: int) -> Path:
     return backup_dir / f"{file_id:016x}.json"
 
 
 def apply(args: argparse.Namespace, patch_dir: Path, db_path: Path, file_id: int) -> None:
-    existing = find_entries(args.install_root, file_id)
+    existing, n_hits = find_entries(args.install_root, file_id)
+    flags = read_info0_flags(db_path, file_id)
+    if not existing and n_hits == 0 and flags is None and not db_has_info1(db_path, file_id) and not args.new:
+        sys.exit(
+            "file id is not in any package index or the patch db; the engine would never query it.\n"
+            "  - pass the engine's real id as id:<16hex> (path hashing can miss reconstructed names), or\n"
+            "  - pass --new to add a genuinely new file."
+        )
     wrapper = wrapper_of(read_stored(existing[0])) if existing else None
     if not existing:
-        print("note: file not found in any index; storing the replacement raw")
+        print("note: no physical package copy found; storing the replacement raw")
     data = stored_form(args, wrapper, None)
     with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as ro:
         pack_no = args.pack if args.pack is not None else pick_pack(patch_dir, ro)
     pack = patch_dir / f"Patch{pack_no}.mpk"
     offset = pack.stat().st_size if pack.exists() else 0
     chash = content_hash(data)
-    row = (signed64(file_id), len(data), pack_no, signed64(chash), 0, 0, offset)
+    v4, v5 = flags if flags else (0, 0)
+    if args.v5 is not None:
+        v5 = args.v5
+    row = (signed64(file_id), len(data), pack_no, signed64(chash), v4, v5, offset)
     journal = journal_path(args.backup_dir, file_id)
 
     print(f"file id      {file_id:016x} ({args.vfs_path})")
     print(f"replacement  {args.replacement} stored {(wrapper or b'raw').decode()}, {len(data)} bytes, content hash {chash:016x}")
+    if v5 == 0 and flags is None and args.v5 is None:
+        print("note: patcher flag v5=0; bootstrap/patcher scripts (patch_main, patcher, launcher, ...) need --v5 1")
     print(f"pack         {pack} (append at offset {offset})")
     print(f"info0 row    {row}")
     if journal.exists():
@@ -256,19 +285,25 @@ def stored_form(args: argparse.Namespace, wrapper: bytes | None, size: int | Non
     return block
 
 
-def find_entries(install_root: Path, file_id: int) -> list:
-    """Index entries for this file with usable physical offsets, the one the engine prefers first."""
+def find_entries(install_root: Path, file_id: int) -> tuple[list, int]:
+    """Entries with physical offsets (engine-preferred first) and the raw hit count across all sources.
+
+    Block packs (EZST) index files by logical block offsets, so their entries cannot be seeked to a
+    byte position; they are dropped here. A nonzero raw count with an empty list means the file exists
+    only in block packs: patch it through the database route, not in place.
+    """
     wt = hp.load_tool("wwm_textures")
     hits = [e for e in wt.collect_entries(install_root, {"res", "lt", "cache", "db"}) if e.file_id == file_id]
     usable = []
     for e in hits:
         if e.source == "cache" and not os.path.exists(e.container):
             continue
-        if e.source == "cache" and wt.Pack(e.container).blocks is not None:
-            print(f"note: skipping {e.container} (block pack without physical offsets)")
+        if e.source in ("res", "lt", "cache") and wt.Pack(e.container).blocks is not None:
+            print(f"note: skipping {e.container} ({e.source} block pack; index offset is not a physical file offset)")
             continue
         usable.append(e)
-    return sorted(usable, key=lambda e: SOURCE_PRIORITY.get(e.source, 9))
+    usable.sort(key=lambda e: SOURCE_PRIORITY.get(e.source, 9))
+    return usable, len(hits)
 
 
 def read_stored(entry) -> bytes:
@@ -286,11 +321,13 @@ def inplace_journal(backup_dir: Path, file_id: int) -> Path:
 
 
 def apply_inplace(args: argparse.Namespace, db_path: Path, file_id: int) -> None:
-    entries = find_entries(args.install_root, file_id)
+    entries, n_hits = find_entries(args.install_root, file_id)
     if args.source:
         entries = [e for e in entries if e.source == args.source]
     if not entries:
-        sys.exit("no index entry with physical offsets found for this file")
+        if n_hits:
+            sys.exit("this file lives only in block (EZST) packs with no physical offset; use the database route instead")
+        sys.exit("no index entry found for this file (check the id; path hashing can miss reconstructed names)")
     entry = entries[0]
     for other in entries[1:]:
         print(f"note: another entry exists in {other.container} ({other.source}); pick it with --source {other.source}")
@@ -376,6 +413,8 @@ def main() -> None:
     ap.add_argument("--in-place", action="store_true", help="overwrite the bytes in the base pack instead")
     ap.add_argument("--source", choices=sorted(SOURCE_PRIORITY), help="index source of the entry to overwrite in place")
     ap.add_argument("--stored", action="store_true", help="replacement file is already in stored form; write it as is")
+    ap.add_argument("--v5", type=int, choices=(0, 1), help="info0 patcher-file flag for the new row (default: keep existing, else 0)")
+    ap.add_argument("--new", action="store_true", help="allow a file id absent from every index and the patch db")
     ap.add_argument("--level", type=int, default=19, help="zstd level for re-compressed entries")
     ap.add_argument("--pack", type=int, help="patch pack number to append to (default: an empty one)")
     ap.add_argument("--backup-dir", type=Path, default=DEFAULT_BACKUP_DIR)

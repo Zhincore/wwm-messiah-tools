@@ -133,11 +133,16 @@ def read_mpkinfo(path: Path, install_root: Path, source: str) -> list[Entry]:
 
 
 def read_mpkdb(path: Path) -> list[Entry]:
+    # mode=ro (not immutable): the schema and rows can live in the -wal, which immutable mode ignores.
     out = []
-    con = sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True)
+    con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     try:
         for table, source in (("info0", "db0"), ("info1", "db1")):
-            for v0, size, pack, off in con.execute(f"select v0, v1, v2, v6 from {table}"):
+            try:
+                rows = con.execute(f"select v0, v1, v2, v6 from {table}").fetchall()
+            except sqlite3.OperationalError:
+                continue
+            for v0, size, pack, off in rows:
                 if not size or isinstance(v0, str):
                     continue
                 fid = v0 & 0xFFFFFFFFFFFFFFFF
