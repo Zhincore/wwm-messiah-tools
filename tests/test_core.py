@@ -161,27 +161,21 @@ def test_string_cell_span_locates_value():
         tables.string_cell_span(row, ["a", "exec"], "missing")
 
 
-def test_hd_block_inplace_rewrite_roundtrip(tmp_path):
-    """A container block can be re-zstd'd to the exact stored size and read back."""
+def test_hd_container_rewrite_roundtrip(tmp_path):
+    """read_container/write_container rebuild a multi-block container; a block may change size."""
     from wwm import tables
-    payload = b"exec=AAAAAAAA;" + random.Random(3).randbytes(400)  # realistic, low-redundancy block
-    frame = codecs.zstd_frame(payload)
-    header9 = bytes(9)
-    stored = header9 + frame
-    buf = struct.pack("<IIII", tables.HD_MAGIC, 1, 1, 0) + struct.pack("<I", len(stored)) + stored
-    f = tmp_path / "data0"
-    f.write_bytes(buf)
-    c = tables.Container(f)
-    assert c.block(0) == payload
-    start, slen, hdr = tables.find_block_span(c, 0)
-    assert hdr == header9 and slen == len(stored)
-    new_payload = b"exec=loader  ;" + payload[14:]  # same length edit
-    assert len(new_payload) == len(payload)
-    newframe = codecs.zstd_frame(new_payload, size=slen - 9)
-    with open(f, "r+b") as fh:
-        fh.seek(start)
-        fh.write(hdr + newframe)
-    assert tables.Container(f).block(0) == new_payload
+    payloads = [b"block0", random.Random(3).randbytes(400), b"tail-block"]
+    blocks = [bytes(9) + codecs.zstd_frame(p) for p in payloads]
+    tables.write_container(tmp_path / "data0", (tables.HD_MAGIC, 1, 0), blocks)
+    c = tables.Container(tmp_path / "data0")
+    assert [c.block(i) for i in range(3)] == payloads
+    # edit the middle block to a DIFFERENT compressed size; other blocks must stay readable
+    hdr, raw = tables.read_container(tmp_path / "data0")
+    raw[1] = bytes(9) + codecs.zstd_frame(b"replacement-" + b"Z" * 900)
+    tables.write_container(tmp_path / "data0", hdr, raw)
+    c2 = tables.Container(tmp_path / "data0")
+    assert c2.block(0) == payloads[0] and c2.block(2) == payloads[2]
+    assert c2.block(1) == b"replacement-" + b"Z" * 900
 
 
 # ---- LocalDB hotfix patch (auto-run loader) ----

@@ -45,6 +45,7 @@ from __future__ import annotations
 import argparse
 import json
 import mmap
+import os
 import re
 import struct
 import sys
@@ -343,11 +344,35 @@ def string_cell_span(seg: bytes, fields: list[str], field: str) -> tuple[int, in
     raise ValueError(f"field {field!r} not found as a string cell in the row")
 
 
-def find_block_span(container: Container, index: int) -> tuple[int, int, bytes]:
-    """Stored (absolute offset, length, 9-byte header) of one block in its container file."""
+def read_container(path: Path) -> tuple[tuple[int, int, int], list[bytes]]:
+    """(magic, version, reserved), stored block bytes[] of a container file."""
+    data = path.read_bytes()
+    magic, version, count, reserved = struct.unpack_from("<IIII", data, 0)
+    if magic != HD_MAGIC:
+        raise ValueError(f"{path}: bad magic")
+    ends = struct.unpack_from(f"<{count}I", data, 16)
+    base = 16 + 4 * count
+    blocks = [data[base + (ends[i - 1] if i else 0) : base + ends[i]] for i in range(count)]
+    return (magic, version, reserved), blocks
+
+
+def write_container(path: Path, header: tuple[int, int, int], blocks: list[bytes]) -> None:
+    """Write a container, recomputing end_offsets. Block count/order unchanged keeps shard refs valid."""
+    magic, version, reserved = header
+    ends, acc = [], 0
+    for b in blocks:
+        acc += len(b)
+        ends.append(acc)
+    out = struct.pack("<IIII", magic, version, len(blocks), reserved) + struct.pack(f"<{len(blocks)}I", *ends)
+    out += b"".join(blocks)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_bytes(out)
+    os.replace(tmp, path)
+
+
+def block_header9(container: Container, index: int) -> bytes:
     start = container._base + (container._ends[index - 1] if index else 0)
-    end = container._base + container._ends[index]
-    return start, end - start, bytes(container._mm[start : start + 9])
+    return bytes(container._mm[start : start + 9])
 
 
 def locate_row(store: Store, table: str, where_field: str, where_value: str):
@@ -368,7 +393,11 @@ def locate_row(store: Store, table: str, where_field: str, where_value: str):
 
 
 def patch_field(args) -> None:
-    """Replace a string field of one row in place (same stored length), journalled."""
+    """Replace a string field of one row (same decoded length), rewriting the data block; journalled.
+
+    The decompressed block keeps its size (so shard offsets are unchanged), but its recompressed
+    stored size may differ, so the whole container is rewritten with updated end_offsets.
+    """
     from .codecs import zstd_frame
     from .files import game_running
 
@@ -380,60 +409,47 @@ def patch_field(args) -> None:
     data_name = f"data{f}"
     container = store._files.get(data_name) or Container(hd / data_name)
     block = bytearray(container.block(b))
-    seg_start, seg_end = off * 8, (off + ln) * 8
-    vs, ve = string_cell_span(block[seg_start:seg_end], fields, args.field)
+    seg_start = off * 8
+    vs, ve = string_cell_span(block[seg_start : (off + ln) * 8], fields, args.field)
     vs, ve = seg_start + vs, seg_start + ve
     old = bytes(block[vs:ve]).decode("utf-8", "replace")
     new_bytes = args.value.encode("utf-8")
     if len(new_bytes) > ve - vs:
-        sys.exit(f"replacement is {len(new_bytes)} bytes; field holds {ve - vs} (same-length edit only; shorten it)")
+        sys.exit(f"replacement is {len(new_bytes)} bytes; field holds {ve - vs} (same decoded length only; shorten it)")
     new_bytes = new_bytes + b" " * (ve - vs - len(new_bytes))  # pad with spaces (harmless in Lua)
     block[vs:ve] = new_bytes
-    start, stored_len, header = find_block_span(container, b)
-    try:
-        frame = zstd_frame(bytes(block), size=stored_len - 9)
-    except ValueError as e:
-        sys.exit(f"{e}; the edited block does not fit its stored size")
-    new_stored = header + frame
-    assert len(new_stored) == stored_len
+    header9 = block_header9(container, b)
+    new_stored = header9 + zstd_frame(bytes(block))  # natural size; container rewrite absorbs the delta
     path = hd / data_name
     print(f"table    {args.patch_field}  row {args.where_field}={args.where_value!r} (key {key:#x})")
     print(f"field    {args.field}: {old.strip()!r}")
     print(f"      -> {args.value!r} (padded to {ve - vs} bytes)")
-    print(f"block    {data_name} block {b} @ {start} ({stored_len} B stored){' [patch shard]' if patched else ''}")
+    print(f"block    {data_name} block {b}{' [patch shard]' if patched else ''}")
     if not args.apply:
         print("dry run: nothing written (add --apply)")
         return
-    orig_stored = bytes(container._mm[start : start + stored_len])
-    journal = {"file": data_name, "offset": start, "orig": orig_stored.hex(),
-               "table": args.patch_field, "where": f"{args.where_field}={args.where_value}", "field": args.field}
+    hdr, blocks = read_container(path)
     jdir = Path(args.journal_dir)
     jdir.mkdir(parents=True, exist_ok=True)
     jpath = jdir / f"hdpatch_{args.patch_field}_{re.sub(r'[^A-Za-z0-9]+', '_', args.where_value)}.json"
     if jpath.exists():
         sys.exit(f"a patch for this row is already journalled ({jpath}); revert it first")
-    jpath.write_text(json.dumps(journal, indent=1))
-    with open(path, "r+b") as fh:
-        fh.seek(start)
-        fh.write(new_stored)
-        fh.flush()
-        import os
-        os.fsync(fh.fileno())
+    jpath.write_text(json.dumps({"file": data_name, "block": b, "orig": blocks[b].hex(),
+                                 "table": args.patch_field, "where": f"{args.where_field}={args.where_value}",
+                                 "field": args.field}))
+    blocks[b] = new_stored
+    write_container(path, hdr, blocks)
     print(f"applied. journal: {jpath}")
 
 
 def revert_patch(args) -> None:
     j = json.loads(Path(args.revert_patch).read_text())
     path = Path(args.hd_dir) / j["file"]
-    orig = bytes.fromhex(j["orig"])
-    with open(path, "r+b") as fh:
-        fh.seek(j["offset"])
-        fh.write(orig)
-        fh.flush()
-        import os
-        os.fsync(fh.fileno())
+    hdr, blocks = read_container(path)
+    blocks[j["block"]] = bytes.fromhex(j["orig"])
+    write_container(path, hdr, blocks)
     Path(args.revert_patch).rename(Path(args.revert_patch).with_suffix(".reverted.json"))
-    print(f"reverted {j['table']} {j['where']} {j['field']} ({len(orig)} B at {j['offset']} in {j['file']})")
+    print(f"reverted {j['table']} {j['where']} {j['field']} (block {j['block']} in {j['file']})")
 
 
 # ---------------------------------------------------------------- cli
