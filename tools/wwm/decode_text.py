@@ -139,11 +139,102 @@ def decode_file(path: Path) -> tuple[str, str]:
     return "plain", data.decode("utf-8", errors="replace")
 
 
+DEFAULT_LOADER = 'pcall(function() load(MPatch.GetRawDataInSystem("LocalData","s.lua"))() end)'
+HD_PATCH_JOURNAL = Path.home() / ".local/share/wwm-messiah-tools/hd-patches"
+
+
+def patch_hotfix(args) -> int:
+    """Prepend a loader snippet to cached hotfix code strings in a LocalDB db (auto-run at startup).
+
+    The server still decides which ids execute, but cached code is used without re-validation, so a
+    persistent hotfix the server keeps listing will run our prepended loader every launch.
+    """
+    import sqlite3  # noqa: PLC0415
+    import msgpack  # noqa: PLC0415
+    from .files import game_running  # noqa: PLC0415
+
+    if args.apply and not args.force and game_running():
+        return _err("wwm.exe is running; close the game first (it rewrites LocalDB on save) or pass --force")
+    db = args.patch_hotfix
+    snippet = args.loader if args.loader is not None else DEFAULT_LOADER
+    con = sqlite3.connect(db)
+    rows = con.execute("select key, scope, content from localdb where key like 'hotfix\\_%' escape '\\'").fetchall()
+    rows = [(k, s, c) for k, s, c in rows if k != "hotfix_meta"]
+    if not rows:
+        return _err(f"no cached hotfixes in {db} (log in once so the server populates them)")
+    decoded = []
+    for key, scope, content in rows:
+        try:
+            code = msgpack.unpackb(xor_repeat(content, HEX_XOR_KEY), raw=False, strict_map_key=False)
+        except Exception:
+            code = None
+        if isinstance(code, str) and snippet not in code:
+            decoded.append((key, scope, content, code))
+    if not decoded:
+        return _err("no eligible hotfix rows (already patched, or none hold a code string)")
+    decoded.sort(key=lambda r: len(r[3]))
+    targets = decoded if args.all else decoded[:1]
+    print(f"{db}: {len(rows)} cached hotfixes; prepending loader to {len(targets)} "
+          f"({'all eligible' if args.all else 'smallest'})")
+    for key, scope, _content, code in targets:
+        print(f"  {key} ({len(code)} B)")
+    if not args.apply:
+        print("dry run: nothing written (add --apply)")
+        return 0
+    jdir = Path(args.journal_dir)
+    jdir.mkdir(parents=True, exist_ok=True)
+    jpath = jdir / f"hotfix_{Path(db).name}.json"
+    if jpath.exists():
+        return _err(f"a hotfix patch is already journalled ({jpath}); revert it first")
+    journal = {"db": str(db), "rows": [{"key": k, "scope": s, "orig": c.hex()} for k, s, c, _ in targets]}
+    jpath.write_text(json.dumps(journal))
+    for key, scope, _content, code in targets:
+        new = snippet + "\n;" + code
+        blob = xor_repeat(msgpack.packb(new), HEX_XOR_KEY)
+        con.execute("update localdb set content=? where key=? and scope=?", (blob, key, scope))
+    con.commit()
+    con.close()
+    print(f"applied. journal: {jpath}")
+    return 0
+
+
+def revert_hotfix(args) -> int:
+    import sqlite3  # noqa: PLC0415
+    j = json.loads(Path(args.revert_hotfix).read_text())
+    con = sqlite3.connect(j["db"])
+    for r in j["rows"]:
+        con.execute("update localdb set content=? where key=? and scope=?",
+                    (bytes.fromhex(r["orig"]), r["key"], r["scope"]))
+    con.commit()
+    con.close()
+    Path(args.revert_hotfix).rename(Path(args.revert_hotfix).with_suffix(".reverted.json"))
+    print(f"reverted {len(j['rows'])} hotfix row(s) in {j['db']}")
+    return 0
+
+
+def _err(msg: str) -> int:
+    print(msg, file=sys.stderr)
+    return 1
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("files", nargs="+", type=Path)
+    ap.add_argument("files", nargs="*", type=Path)
     ap.add_argument("-o", "--out-dir", type=Path, help="write decoded files here instead of stdout")
+    ap.add_argument("--patch-hotfix", metavar="DB_MP", help="prepend a loader to cached hotfix code (auto-run)")
+    ap.add_argument("--all", action="store_true", help="patch every eligible hotfix row, not just the smallest")
+    ap.add_argument("--loader", help=f"loader snippet to prepend (default: {DEFAULT_LOADER})")
+    ap.add_argument("--apply", action="store_true", help="write the change (default: dry run)")
+    ap.add_argument("--journal-dir", default=str(HD_PATCH_JOURNAL))
+    ap.add_argument("--force", action="store_true", help="skip the game-running check")
+    ap.add_argument("--revert-hotfix", metavar="JOURNAL", help="undo a --patch-hotfix change")
     args = ap.parse_args()
+    if args.revert_hotfix:
+        return revert_hotfix(args)
+    if args.patch_hotfix:
+        return patch_hotfix(args)
+    if not args.files:
+        ap.error("need files to decode, --patch-hotfix, or --revert-hotfix")
     if args.out_dir:
         args.out_dir.mkdir(parents=True, exist_ok=True)
     rc = 0

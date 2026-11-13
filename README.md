@@ -141,7 +141,8 @@ Python package `wwm` in `tools/wwm/` (`pyproject.toml`); each tool is a console 
   wrappers; index sources (`collect_entries`), `Entry`, `Pack` (mmapped packs, block-pack walking)
 - `wwm-textures` — texture/image extractor
 - `wwm-texture-index` — header-only texture census
-- `wwm-decode-text` — decoder for `HEX_`/`HEXB_` wrappers, SQLite LocalDB, CLv2 logs
+- `wwm-decode-text` — decoder for `HEX_`/`HEXB_` wrappers, SQLite LocalDB, CLv2 logs; `--patch-hotfix`
+  edits a cached LocalDB hotfix code string (journalled, `--revert-hotfix`)
 - `wwm-harvest` — harvest cleartext asset paths from payloads, hash them to file ids, capture csb
 - `wwm-csb` — Cocos csb decoder (`cocos_csb_schema.json` generated from cocos2d-x headers)
 - `wwm-ui-map` — UI asset map: csb trees, texts, timelines, atlases, recovered names

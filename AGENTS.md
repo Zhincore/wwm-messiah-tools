@@ -10,7 +10,8 @@ Python package `wwm` in `tools/wwm/` (`pyproject.toml`, editable install in `.ve
 - `codecs.py` — EZST/ZSTD encode/decode (exact-size zstd framing), LuaText encode/decode
 - `vfs.py` — `collect_entries()` over all index sources, `Entry`, `Pack` (mmap, block-pack walk), `TEX_MAGIC`
 - `textures.py` (`wwm-textures`), `texture_index.py` — texture container parse/extract, header census
-- `decode_text.py` — HEX_/HEXB_/shift-1/CLv2/LocalDB text decoder
+- `decode_text.py` — HEX_/HEXB_/shift-1/CLv2/LocalDB text decoder; `--patch-hotfix` edits a cached
+  LocalDB hotfix code string (XOR+msgpack, journalled, `--revert-hotfix`); game closed, only when asked
 - `harvest.py` — path harvest from payloads, csb capture, manifest matching
 - `csb.py`, `ui_map.py`, `atlas.py` — Cocos UI: csb decode, UI map, atlas frame cutting
 - `lua.py` — LuaText → stock Lua 5.4 bytecode (+ unluac; needs `tools/unluac-messiah.patch`). Its `.luac`

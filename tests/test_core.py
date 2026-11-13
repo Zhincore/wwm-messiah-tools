@@ -182,3 +182,38 @@ def test_hd_block_inplace_rewrite_roundtrip(tmp_path):
         fh.seek(start)
         fh.write(hdr + newframe)
     assert tables.Container(f).block(0) == new_payload
+
+
+# ---- LocalDB hotfix patch (auto-run loader) ----
+
+def test_hotfix_patch_prepend_and_revert(tmp_path):
+    import types
+    import msgpack
+    from wwm import decode_text as dt
+
+    db = tmp_path / "db_mp"
+    con = sqlite3.connect(db)
+    con.execute("create table localdb(id TEXT PRIMARY KEY, key TEXT, scope TEXT, content BLOB)")
+    code = "return require('x')"
+    enc = lambda v: dt.xor_repeat(msgpack.packb(v), dt.HEX_XOR_KEY)
+    con.execute("insert into localdb values(?,?,?,?)", ("hotfix_1global", "hotfix_1", "global", enc(code)))
+    con.execute("insert into localdb values(?,?,?,?)", ("hotfix_metaglobal", "hotfix_meta", "global", enc({"version": "1"})))
+    con.commit(); con.close()
+
+    ns = lambda **k: types.SimpleNamespace(**k)
+    rc = dt.patch_hotfix(ns(patch_hotfix=str(db), all=False, loader=None, apply=True,
+                            force=True, journal_dir=str(tmp_path / "j")))
+    assert rc == 0
+    con = sqlite3.connect(db)
+    val = msgpack.unpackb(dt.xor_repeat(con.execute("select content from localdb where key='hotfix_1'").fetchone()[0],
+                                        dt.HEX_XOR_KEY), raw=False)
+    con.close()
+    assert "s.lua" in val and val.endswith(code)  # loader prepended, original kept
+
+    jp = next((tmp_path / "j").glob("*.json"))
+    assert dt.revert_hotfix(ns(revert_hotfix=str(jp))) == 0
+    con = sqlite3.connect(db)
+    back = msgpack.unpackb(dt.xor_repeat(con.execute("select content from localdb where key='hotfix_1'").fetchone()[0],
+                                         dt.HEX_XOR_KEY), raw=False)
+    con.close()
+    assert back == code
