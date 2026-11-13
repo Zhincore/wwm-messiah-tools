@@ -69,4 +69,5 @@ spaces) so neighbouring rows and shard offsets do not move, then re-zstd's the b
 size (empty-block padding, as for EZST). The original block bytes are journalled; `--revert-patch
 JOURNAL` restores them. The replacement must be no longer than the current value, and the edited block
 must still fit its stored size (a less-compressible edit can fail). HD files are loose, so this writes
-the file directly; close the game first.
+the file directly; close the game first (the tool refuses while `wwm.exe` runs). HD files are not in the
+per-launch essential list, so edits persist across normal launches (a repair/patch resets them).

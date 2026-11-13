@@ -370,7 +370,10 @@ def locate_row(store: Store, table: str, where_field: str, where_value: str):
 def patch_field(args) -> None:
     """Replace a string field of one row in place (same stored length), journalled."""
     from .codecs import zstd_frame
+    from .files import game_running
 
+    if args.apply and not args.force and game_running():
+        sys.exit("wwm.exe is running; close the game first (it reads the HD store at startup) or pass --force")
     hd = Path(args.hd_dir)
     store = Store(hd)
     t, fields, (key, f, b, off, ln, patched, row) = locate_row(store, args.patch_field, args.where_field, args.where_value)
@@ -461,6 +464,7 @@ def main() -> None:
     ap.add_argument("--value", help="new field value; must be <= the current length (padded with spaces)")
     ap.add_argument("--apply", action="store_true", help="write the change (default: dry run)")
     ap.add_argument("--journal-dir", default=str(DEFAULT_JOURNAL_DIR))
+    ap.add_argument("--force", action="store_true", help="skip the game-running check for --patch-field")
     ap.add_argument("--revert-patch", metavar="JOURNAL", help="undo a --patch-field change from its journal")
     args = ap.parse_args()
     hd = Path(args.hd_dir)
