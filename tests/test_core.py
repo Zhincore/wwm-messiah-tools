@@ -147,3 +147,38 @@ def test_lua_source_override_round_trip(install):
     stored = (install / "LocalData/Patch/Patch5.mpk").read_bytes()
     assert codecs.luatext_decode(stored, require_chunk=False) == source.read_bytes()
     assert export(install, SCRIPT) == source.read_bytes()
+
+
+# ---- HD store in-place field patch ----
+
+def test_string_cell_span_locates_value():
+    from wwm import tables
+    # row: u16 count=2; cell0 (fid0, u8=7); cell1 (fid1, str "ABCDE")
+    row = struct.pack("<H", 2) + bytes([0, 0x04, 7]) + bytes([1, 0x20]) + struct.pack("<H", 5) + b"ABCDE"
+    s, e = tables.string_cell_span(row, ["a", "exec"], "exec")
+    assert row[s:e] == b"ABCDE"
+    with pytest.raises(ValueError):
+        tables.string_cell_span(row, ["a", "exec"], "missing")
+
+
+def test_hd_block_inplace_rewrite_roundtrip(tmp_path):
+    """A container block can be re-zstd'd to the exact stored size and read back."""
+    from wwm import tables
+    payload = b"exec=AAAAAAAA;" + random.Random(3).randbytes(400)  # realistic, low-redundancy block
+    frame = codecs.zstd_frame(payload)
+    header9 = bytes(9)
+    stored = header9 + frame
+    buf = struct.pack("<IIII", tables.HD_MAGIC, 1, 1, 0) + struct.pack("<I", len(stored)) + stored
+    f = tmp_path / "data0"
+    f.write_bytes(buf)
+    c = tables.Container(f)
+    assert c.block(0) == payload
+    start, slen, hdr = tables.find_block_span(c, 0)
+    assert hdr == header9 and slen == len(stored)
+    new_payload = b"exec=loader  ;" + payload[14:]  # same length edit
+    assert len(new_payload) == len(payload)
+    newframe = codecs.zstd_frame(new_payload, size=slen - 9)
+    with open(f, "r+b") as fh:
+        fh.seek(start)
+        fh.write(hdr + newframe)
+    assert tables.Container(f).block(0) == new_payload

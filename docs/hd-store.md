@@ -61,3 +61,12 @@ Notes:
 directory. Text id `t` lives in block `1 + t % (blocks - 1)`, a hash map of the same shape with
 slots `u64 id, u32 offset, u32 length`; the offset is relative to the offset field itself.
 64-bit values in name/description cells are these ids.
+
+## In-place field edit
+`wwm-tables <hd> --patch-field TABLE --where FIELD=VALUE --field NAME --value STR [--apply]` replaces one
+row's string cell inside its data block, keeping the exact byte length (the new string is padded with
+spaces) so neighbouring rows and shard offsets do not move, then re-zstd's the block to its exact stored
+size (empty-block padding, as for EZST). The original block bytes are journalled; `--revert-patch
+JOURNAL` restores them. The replacement must be no longer than the current value, and the edited block
+must still fit its stored size (a less-compressible edit can fail). HD files are loose, so this writes
+the file directly; close the game first.

@@ -17,7 +17,9 @@ Python package `wwm` in `tools/wwm/` (`pyproject.toml`, editable install in `.ve
   output uses stock opcode numbering: never feed it back into the game
 - `build_luac.py` — lua/luac 5.4 with the game's opcode numbering; its compiler output does not run
   correctly in the game (gaps in the docstring)
-- `tables.py` — HD store data tables: `Store.table(name)`, `Locale` text ids; `--list/--table/--dump`
+- `tables.py` — HD store data tables: `Store.table(name)`, `Locale` text ids; `--list/--table/--dump`;
+  `--patch-field` in-place same-length edit of one row's string cell (re-zstd exact size, journalled,
+  `--revert-patch`); only when the user asks, game closed. HD files are loose in `LocalData/Patch/HD/<region>/`
 - `repository.py` — resource repository: `Repository.records()`, `guid_file_id()`; names for GUID-keyed files
 - `files.py` (`wwm-files export|override|revert|revert-all`) — `export` is read-only; the rest write to the install (patch pack + `Patch.mpkdb`
   row); only run when the user asks, game closed

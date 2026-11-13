@@ -150,7 +150,8 @@ Python package `wwm` in `tools/wwm/` (`pyproject.toml`); each tool is a console 
 - `wwm-build-luac` — build `lua`/`luac` 5.4 with the game's opcode numbering; reads and lists game
   bytecode, but its compiler output is not game-compatible (generic-for slots, metamethod indexes,
   list/dict constructors; see the module docstring)
-- `wwm-tables` — HD store data tables (MANIFEST/index/data) + locale text
+- `wwm-tables` — HD store data tables (MANIFEST/index/data) + locale text; `--patch-field` edits one
+  row's string cell in place (same length, exact-size re-zstd, journalled)
 - `wwm-repository` — resource repository: name ↔ GUID ↔ file id, types, dependencies
 - `wwm-files` — single VFS entries: `export` writes the decoded content the engine resolves (patch
   database before packages); `override`/`revert` change one entry through `Patch.mpkdb` or in its pack

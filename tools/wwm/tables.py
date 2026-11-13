@@ -34,6 +34,10 @@ Usage:
   wwm-tables <hd_dir> --dump DIR [--match REGEX]     decode every (matching) table into DIR
   add --locale en (or zh_cn, ja, ...) to replace text ids with their strings
   wwm-tables <hd_dir> --block data5:123 -o out.bin   write one raw decompressed block
+  wwm-tables <hd_dir> --patch-field TABLE --where F=V --field exec_func --value LUA [--apply]
+                                                     in-place edit a string cell of one row (same length,
+                                                     re-zstd to the exact stored size, journalled); game closed
+  wwm-tables <hd_dir> --revert-patch JOURNAL         undo a --patch-field change
 """
 
 from __future__ import annotations
@@ -313,7 +317,125 @@ def decode_value(seg: bytes, fields: list[str], bare: bool):
     return row
 
 
+# ---------------------------------------------------------------- write-back
+
+
+def string_cell_span(seg: bytes, fields: list[str], field: str) -> tuple[int, int]:
+    """Byte range [start, end) of a string cell's VALUE (no length prefix) within a row segment.
+
+    Only string cells are supported; raises if the field is absent or not a string.
+    """
+    target = fields.index(field)
+    n = struct.unpack_from("<H", seg, 0)[0]
+    pos = 2
+    for _ in range(n):
+        fid_lo, t = seg[pos], seg[pos + 1]
+        fid = fid_lo | ((t & 3) << 8)
+        tag = t >> 2
+        vpos = pos + 2
+        if tag == TLV_STR:
+            ln = struct.unpack_from("<H", seg, vpos)[0]
+            if fid == target:
+                return vpos + 2, vpos + 2 + ln
+            pos = vpos + 2 + ln
+        else:
+            _, pos = tlv_body(tag, seg, vpos)
+    raise ValueError(f"field {field!r} not found as a string cell in the row")
+
+
+def find_block_span(container: Container, index: int) -> tuple[int, int, bytes]:
+    """Stored (absolute offset, length, 9-byte header) of one block in its container file."""
+    start = container._base + (container._ends[index - 1] if index else 0)
+    end = container._base + container._ends[index]
+    return start, end - start, bytes(container._mm[start : start + 9])
+
+
+def locate_row(store: Store, table: str, where_field: str, where_value: str):
+    """The unique row matching where_field==where_value; returns its physical location."""
+    t = store.manifest.tables[table]
+    fields = store.schema(t.schema)
+    hits = []
+    for key, f, b, off, ln, patched in store.locations(t):
+        seg = store.block("data", f, b)[off * 8 : (off + ln) * 8]
+        row = decode_value(seg, fields, bool(t.kind & 1))
+        if isinstance(row, dict) and str(row.get(where_field)) == where_value:
+            hits.append((key, f, b, off, ln, patched, row))
+    if not hits:
+        sys.exit(f"no row in {table} with {where_field}={where_value!r}")
+    if len(hits) > 1:
+        sys.exit(f"{len(hits)} rows match {where_field}={where_value!r}; need a unique selector")
+    return t, fields, hits[0]
+
+
+def patch_field(args) -> None:
+    """Replace a string field of one row in place (same stored length), journalled."""
+    from .codecs import zstd_frame
+
+    hd = Path(args.hd_dir)
+    store = Store(hd)
+    t, fields, (key, f, b, off, ln, patched, row) = locate_row(store, args.patch_field, args.where_field, args.where_value)
+    data_name = f"data{f}"
+    container = store._files.get(data_name) or Container(hd / data_name)
+    block = bytearray(container.block(b))
+    seg_start, seg_end = off * 8, (off + ln) * 8
+    vs, ve = string_cell_span(block[seg_start:seg_end], fields, args.field)
+    vs, ve = seg_start + vs, seg_start + ve
+    old = bytes(block[vs:ve]).decode("utf-8", "replace")
+    new_bytes = args.value.encode("utf-8")
+    if len(new_bytes) > ve - vs:
+        sys.exit(f"replacement is {len(new_bytes)} bytes; field holds {ve - vs} (same-length edit only; shorten it)")
+    new_bytes = new_bytes + b" " * (ve - vs - len(new_bytes))  # pad with spaces (harmless in Lua)
+    block[vs:ve] = new_bytes
+    start, stored_len, header = find_block_span(container, b)
+    try:
+        frame = zstd_frame(bytes(block), size=stored_len - 9)
+    except ValueError as e:
+        sys.exit(f"{e}; the edited block does not fit its stored size")
+    new_stored = header + frame
+    assert len(new_stored) == stored_len
+    path = hd / data_name
+    print(f"table    {args.patch_field}  row {args.where_field}={args.where_value!r} (key {key:#x})")
+    print(f"field    {args.field}: {old.strip()!r}")
+    print(f"      -> {args.value!r} (padded to {ve - vs} bytes)")
+    print(f"block    {data_name} block {b} @ {start} ({stored_len} B stored){' [patch shard]' if patched else ''}")
+    if not args.apply:
+        print("dry run: nothing written (add --apply)")
+        return
+    orig_stored = bytes(container._mm[start : start + stored_len])
+    journal = {"file": data_name, "offset": start, "orig": orig_stored.hex(),
+               "table": args.patch_field, "where": f"{args.where_field}={args.where_value}", "field": args.field}
+    jdir = Path(args.journal_dir)
+    jdir.mkdir(parents=True, exist_ok=True)
+    jpath = jdir / f"hdpatch_{args.patch_field}_{re.sub(r'[^A-Za-z0-9]+', '_', args.where_value)}.json"
+    if jpath.exists():
+        sys.exit(f"a patch for this row is already journalled ({jpath}); revert it first")
+    jpath.write_text(json.dumps(journal, indent=1))
+    with open(path, "r+b") as fh:
+        fh.seek(start)
+        fh.write(new_stored)
+        fh.flush()
+        import os
+        os.fsync(fh.fileno())
+    print(f"applied. journal: {jpath}")
+
+
+def revert_patch(args) -> None:
+    j = json.loads(Path(args.revert_patch).read_text())
+    path = Path(args.hd_dir) / j["file"]
+    orig = bytes.fromhex(j["orig"])
+    with open(path, "r+b") as fh:
+        fh.seek(j["offset"])
+        fh.write(orig)
+        fh.flush()
+        import os
+        os.fsync(fh.fileno())
+    Path(args.revert_patch).rename(Path(args.revert_patch).with_suffix(".reverted.json"))
+    print(f"reverted {j['table']} {j['where']} {j['field']} ({len(orig)} B at {j['offset']} in {j['file']})")
+
+
 # ---------------------------------------------------------------- cli
+
+DEFAULT_JOURNAL_DIR = Path.home() / ".local/share/wwm-messiah-tools/hd-patches"
 
 
 def out_path(root: Path, name: str) -> Path:
@@ -333,8 +455,24 @@ def main() -> None:
     ap.add_argument("--block", metavar="FILE:IDX", help="e.g. data5:123 or index1:7")
     ap.add_argument("--locale", metavar="LANG", help="resolve text ids, e.g. en, zh_cn")
     ap.add_argument("-o", "--output")
+    ap.add_argument("--patch-field", metavar="TABLE", help="in-place edit a string field of one row (game closed)")
+    ap.add_argument("--where", metavar="FIELD=VALUE", help="row selector for --patch-field")
+    ap.add_argument("--field", help="field to replace (string cell), e.g. exec_func")
+    ap.add_argument("--value", help="new field value; must be <= the current length (padded with spaces)")
+    ap.add_argument("--apply", action="store_true", help="write the change (default: dry run)")
+    ap.add_argument("--journal-dir", default=str(DEFAULT_JOURNAL_DIR))
+    ap.add_argument("--revert-patch", metavar="JOURNAL", help="undo a --patch-field change from its journal")
     args = ap.parse_args()
     hd = Path(args.hd_dir)
+
+    if args.revert_patch:
+        return revert_patch(args)
+    if args.patch_field:
+        if not args.where or "=" not in args.where or not args.field or args.value is None:
+            ap.error("--patch-field needs --where FIELD=VALUE --field NAME --value STR")
+        args.where_field, _, args.where_value = args.where.partition("=")
+        return patch_field(args)
+
     store = Store(hd, Locale(hd, args.locale) if args.locale else None)
     tables = store.manifest.tables
 
