@@ -211,3 +211,26 @@ def test_hotfix_patch_prepend_and_revert(tmp_path):
                                          dt.HEX_XOR_KEY), raw=False)
     con.close()
     assert back == code
+
+
+# ---- gamedata export ----
+
+def test_gamedata_export_kind():
+    import types
+    from wwm import gamedata
+    rows = [
+        {"_key": 10102, "kongfu_id": 10102, "name": "Nameless Sword", "weapon_type": 101, "hide": None},
+        {"_key": 5, "kongfu_id": 5, "name": ""},          # unnamed -> skipped by default
+        {"_key": 7, "kongfu_id": 7, "name": "Other", "weapon_type": 2},
+    ]
+    store = types.SimpleNamespace(manifest=types.SimpleNamespace(tables={"kongfu": 1}),
+                                  table=lambda name: {"rows": rows})
+    data, count, named = gamedata.export_kind(store, "kongfu", "kongfu_id", "name", ["weapon_type", "hide"], False)
+    assert count == 2 and named == 2
+    assert data["10102"] == {"id": 10102, "name": "Nameless Sword", "weapon_type": 101}  # None 'hide' dropped
+    assert "5" not in data
+    # missing table -> None
+    assert gamedata.export_kind(store, "nope", "id", "name", [], False)[0] is None
+    # keep_unnamed includes the blank one with name=None
+    data2, count2, named2 = gamedata.export_kind(store, "kongfu", "kongfu_id", "name", [], True)
+    assert count2 == 3 and named2 == 2 and data2["5"]["name"] is None
