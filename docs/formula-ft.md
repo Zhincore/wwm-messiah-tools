@@ -8,7 +8,7 @@ also stores its value for the default inputs. That gives a complete self-check: 
 of all seven files (build 2026-11-02/r64785, 5,114 formulas) reproduces every stored value.
 
 ## Layout
-Little-endian. Header: `u32 1, u32 hash?, u32 names_at (24), u32 formulas_at, u32 inputs_at, u32 nodes_at`.
+Little-endian. Header: `u32 1, u32 build time (unix), u32 names_at (24), u32 formulas_at, u32 inputs_at, u32 nodes_at`.
 
 1. **Names** `names_at..formulas_at`: NUL-terminated strings, sorted. Everything else refers to them by index.
 2. **Formulas** `formulas_at..inputs_at`: `u16 count`, then `count` × `(u16 name, u16 root node)`.
@@ -17,14 +17,14 @@ Little-endian. Header: `u32 1, u32 hash?, u32 names_at (24), u32 formulas_at, u3
 4. **Nodes** `nodes_at..`: `u16 count`, then per node `u32 size` (bytes after this field), `u16 kind,
    u16 index` (sequential), `f32 stored value`, then u16 fields by kind:
 
-| Kind | Fields | Meaning |
+| Kind (game's class) | Fields | Meaning |
 |---|---|---|
-| 1 variable | `name, node` | named value; `node` = the formula's root node, `0xFFFF` = input |
-| 2 chain | `n, operand, (op, operand)…` (`n` = number of u16 that follow) | `a op b op c …` evaluated left to right |
-| 3 negate | `1, operand` | `-x` |
-| 4 constant | (the f32 is repeated) | number |
-| 5 string | `name` | string literal (argument of `config`) |
-| 6 call | `name, argc, args…` | function call |
+| 1 variable (`NameExpr`) | `name, node` | named value; `node` = the formula's root node, `0xFFFF` = input |
+| 2 chain (`BinopListExpr`) | `n, operand, (op, operand)…` (`n` = number of u16 that follow) | `a op b op c …` evaluated left to right |
+| 3 negate (`UnaryopExpr`) | `1, operand` | `-x` |
+| 4 constant (`NumberExpr`) | (the f32 is repeated) | number |
+| 5 string (`StringExpr`) | `name` | string literal (argument of `config`) |
+| 6 call (`FunctionExpr`) | `name, argc, args…` | function call |
 
 Chain operators: `0 +`, `1 -`, `2 *`, `3 /`, `9 ==` (checked against all stored values), `7 >`, `8 >=`
 (inferred: two uses, `FINAL_CRI_B_chance > _RANDOM`, `FINAL_CRI_A_chance >= _RANDOM`; the stored values
@@ -33,6 +33,28 @@ grouping is done with nested chains. Comparisons give 1 or 0.
 
 Functions: `min`, `max` (2+ arguments), `floor`, `clamp(x, low, high)`, `config(...)`. Division by zero
 occurs with default inputs (the stored value is then NaN/inf).
+
+## How the game uses it
+Evaluation is native: `hexm/common/formula_gen/runtime/formula_manager.lua` hands the raw file to
+`formula_tree.load_tree_from_data(tree, bytes)` (C++), and entities own a `formula_tree.formula_data`
+(`formula_cpp.lua`: `get`, `update_leaf`, `update_leaves`). Lua only writes inputs and receives changed
+outputs (`update_attr_multi`). Trees: player, npc, disease, ququ, pet (+ `player_grey`); `zzq_npc` is not
+referenced from Lua.
+
+The same trees exist as Lua tables for two of them (`hexm/client/data*/attr_formula_data/formula_ququ.lua`,
+`formula_pet.lua`: `Targets`, `Leaves`, `Exprs = {id, dependents, {Class, ...}, default}`), used when the
+native loader is absent; the node classes above are from there, and node counts per class match the
+binary. The build strips the Lua form of player/npc/disease (`cook.lua` `FILTER_TABLE_NAMES`).
+`formula_<tree>_defaults.lua` lists every name's default value.
+
+Functions the game registers for formulas (`attr_formula.lua`): `min`, `max`, `exp`, `pow`, `ln`, `clamp`,
+`get_row_data`, `random`, `rand_or_fix`, `floor`, `sqrt`, `abs`, `real_rtable`. The files use only
+`config`, `min`, `max`, `clamp`, `floor`.
+
+Inputs are written by Lua under fixed prefixes: `BUFF_` (buffs), `EQUIP_`, `WUYIN_`, `TALENT_`, `DRUG_`
+(`attr_server_add_base.lua`), plus `level`, `kongfu_main_lv`, `kongfu_sub_lv`, `active_kongfu`, `_HP_INPUT`.
+`B.<name>` holds values of the target entity. Damage and heal maths are separate, readable Lua
+(`hexm/common/formula_gen/code/*.lua`, run by `combat/damage_manager.lua`).
 
 ## Semantics
 - `config('table', 'field', key[, default])` reads `field` of the row with that key in an HD data table
@@ -51,5 +73,4 @@ occurs with default inputs (the stored value is then NaN/inf).
 
 ## Open
 - Where `work_level_inc_attr` and `guild_dianxiu_attr_data` come from.
-- Meaning of the header hash; whether the engine checks it.
 - Which source (gear, inner ways, …) fills which `EQUIP_*`/`XINFA_*`/… input.
