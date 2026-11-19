@@ -1,7 +1,7 @@
 # Gear rolls: tables and math
 
 Which stats a gear item can roll, with what chance and range. Export: `tools/wwm/tuning.py`
-(`wwm-tuning <hd_dir> -o OUT`). Roll logic is from the decompiled module the client shares with the
+(`wwm-data tuning <hd_dir> -o OUT`). Roll logic is from the decompiled module the client shares with the
 server, `hexm/common/misc/equip_attr_misc.lua` (+ `nmath.rand_choice_with_weights_*`); the server runs
 its own copy, so treat the logic as "what the client believes". Checked against a running client: the
 exported weights and ranges equal `G.datam.*` (2026-11-02/r64785).

@@ -7,7 +7,7 @@ gear tier. Source field names are kept; docs/gear-tuning.md explains them and th
 Uses the plain tables, not the `__grey` A/B variants. Re-run after each game patch.
 
 Usage:
-  wwm-tuning <hd_dir> -o OUT [--locale en]      # e.g. <install>/LocalData/Patch/HD/oversea
+  wwm-data tuning <hd_dir> -o OUT [--locale en]   # e.g. <install>/LocalData/Patch/HD/oversea
 Writes OUT/{affixes,pools,attunements,items,levels,materials,legacy,config,paths,sets}.json + manifest.json.
 """
 
@@ -126,13 +126,16 @@ def build(store: Store) -> tuple[dict[str, object], list[str]]:
     return out, missing
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+def add_parser(sub) -> None:
+    ap = sub.add_parser("tuning", help="gear roll tables, shaped", description=__doc__,
+                        formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("hd_dir", help="HD store dir, e.g. <install>/LocalData/Patch/HD/oversea")
     ap.add_argument("-o", "--out", required=True, help="output directory for the JSON files")
     ap.add_argument("--locale", default="en", help="language for resolved names (default: en)")
-    args = ap.parse_args()
+    ap.set_defaults(run=run)
 
+
+def run(args) -> int:
     hd = Path(args.hd_dir)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -155,6 +158,3 @@ def main() -> int:
     print(f"version {manifest['game_version']} -> {out}/manifest.json")
     return 0
 
-
-if __name__ == "__main__":
-    raise SystemExit(main())

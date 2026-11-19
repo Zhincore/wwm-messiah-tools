@@ -7,7 +7,7 @@ English text is resolved via the locale tables. Re-run after each game patch. Us
 not the `__grey` A/B variants (those are smaller alternate sets, not supersets).
 
 Usage:
-  wwm-gamedata <hd_dir> -o OUT [--locale en]      # e.g. <install>/LocalData/Patch/HD/oversea
+  wwm-data names <hd_dir> -o OUT [--locale en]    # e.g. <install>/LocalData/Patch/HD/oversea
 Writes OUT/<kind>.json = { "<id>": { "id": <id>, "name": "...", ...extra } } and OUT/manifest.json.
 """
 
@@ -67,14 +67,17 @@ def export_kind(store: Store, table: str, id_field: str, name_field: str, extra:
     return out, len(out), named
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+def add_parser(sub) -> None:
+    ap = sub.add_parser("names", help="id -> name maps per kind", description=__doc__,
+                        formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("hd_dir", help="HD store dir, e.g. <install>/LocalData/Patch/HD/oversea")
     ap.add_argument("-o", "--out", required=True, help="output directory for the JSON files")
     ap.add_argument("--locale", default="en", help="language for resolved names (default: en)")
     ap.add_argument("--all", action="store_true", help="include rows without a name (default: named only)")
-    args = ap.parse_args()
+    ap.set_defaults(run=run)
 
+
+def run(args) -> int:
     hd = Path(args.hd_dir)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -99,6 +102,3 @@ def main() -> int:
     print(f"version {manifest['game_version']} -> {out}/manifest.json")
     return 0
 
-
-if __name__ == "__main__":
-    raise SystemExit(main())

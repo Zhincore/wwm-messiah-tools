@@ -7,9 +7,9 @@ game's field names; docs/datasets.md says what is known about each. Uses the pla
 `__grey` A/B variants. Re-run after each game patch.
 
 Usage:
-  wwm-datasets <hd_dir> --list                       # datasets with table and row counts
-  wwm-datasets <hd_dir> -o OUT [dataset ...]         # default: all datasets
-  wwm-datasets <hd_dir> -o OUT --tables REGEX        # any tables, written to OUT/custom/
+  wwm-data raw <hd_dir> --list                       # datasets with table and row counts
+  wwm-data raw <hd_dir> -o OUT [dataset ...]         # default: all datasets
+  wwm-data raw <hd_dir> -o OUT --tables REGEX        # any tables, written to OUT/custom/
 Writes OUT/<dataset>/<table>.json = { "<row key>": row } and OUT/manifest.json. Tables whose keys repeat
 (marked "multi" in the manifest) map each key to the list of its rows.
 """
@@ -74,16 +74,20 @@ def export(store: Store, out: Path, tables: list[str]) -> dict[str, dict[str, in
     return done
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+def add_parser(sub) -> None:
+    ap = sub.add_parser("raw", help="whole tables by topic", description=__doc__,
+                        formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("hd_dir", help="HD store dir, e.g. <install>/LocalData/Patch/HD/oversea")
     ap.add_argument("datasets", nargs="*", help=f"datasets to export (default all): {', '.join(DATASETS)}")
     ap.add_argument("-o", "--out", help="output directory")
     ap.add_argument("--list", action="store_true", help="list datasets with table and row counts")
     ap.add_argument("--tables", metavar="REGEX", help="export every table matching REGEX to OUT/custom/")
     ap.add_argument("--locale", default="en", help="language for resolved text (default: en)")
-    args = ap.parse_args()
+    ap.set_defaults(run=run, parser=ap)
 
+
+def run(args) -> int:
+    ap = args.parser
     unknown = [d for d in args.datasets if d not in DATASETS]
     if unknown:
         ap.error(f"unknown dataset(s): {', '.join(unknown)}")
@@ -120,6 +124,3 @@ def main() -> int:
     print(f"version {manifest['game_version']} -> {out}/manifest.json")
     return 0
 
-
-if __name__ == "__main__":
-    raise SystemExit(main())

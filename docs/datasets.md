@@ -1,4 +1,4 @@
-# Datasets (`wwm-datasets`)
+# Datasets (`wwm-data raw`)
 
 Bulk export of HD tables by topic (`tools/wwm/datasets.py`, patterns in `DATASETS`). One JSON file per
 table, `{row key: row}`, with the game's own field names and text ids resolved. Tables whose keys repeat
@@ -18,11 +18,11 @@ Counts are from build 2026-11-02/r64785; every table below decodes without error
 | `arena` | 98 | 10,335 | `^lunjian`, `^season_reward`, `^rank_`, `^identity_pvp` |
 | `items` | 56 | 38,459 | `^stuff_`, `^compound_` |
 
-Anything else: `wwm-datasets <hd_dir> -o OUT --tables REGEX`.
+Anything else: `wwm-data raw <hd_dir> -o OUT --tables REGEX`.
 
 ## What is known per dataset
 
-Only `gear` has its logic traced (see `gear-tuning.md`; `wwm-tuning` is the shaped export of that part).
+Only `gear` has its logic traced (see `gear-tuning.md`; `wwm-data tuning` is the shaped export of that part).
 The notes below are read off the rows, not from code, unless stated.
 
 ### gacha
