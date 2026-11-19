@@ -157,6 +157,8 @@ Python package `wwm` in `tools/wwm/` (`pyproject.toml`); each tool is a console 
   attributes, guild, arena, items) as one JSON per table; `--list`, `--tables REGEX`; see `docs/datasets.md`
 - `wwm-data tuning` — static export of the gear roll tables: stat pools with weights and ranges, attunement,
   tuning levels and costs, for every gear tier; fields and roll math in `docs/gear-tuning.md`
+- `wwm-data formulas` — attribute formulas (`formula/*.ft`) decoded to readable text and JSON, with an
+  evaluator; see `docs/formula-ft.md`
 - `wwm-tables` — HD store data tables (MANIFEST/index/data) + locale text; `--patch-field` edits one
   row's string cell in place (same length, exact-size re-zstd, journalled)
 - `wwm-repository` — resource repository: name ↔ GUID ↔ file id, types, dependencies

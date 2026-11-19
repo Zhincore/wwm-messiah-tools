@@ -1,0 +1,52 @@
+# Formula files (`formula/*.ft`)
+
+Attribute formulas of the engine: `formula_player.ft`, `_player_grey`, `_npc`, `_pet`, `_disease`, `_ququ`,
+`_zzq_npc`, loose files next to the HD tables. Reader: `tools/wwm/formula.py` (`wwm-data formulas`).
+
+A file is a dependency graph, like a spreadsheet: input variables, and formulas built from them. Each node
+also stores its value for the default inputs. That gives a complete self-check: evaluating every formula
+of all seven files (build 2026-11-02/r64785, 5,114 formulas) reproduces every stored value.
+
+## Layout
+Little-endian. Header: `u32 1, u32 hash?, u32 names_at (24), u32 formulas_at, u32 inputs_at, u32 nodes_at`.
+
+1. **Names** `names_at..formulas_at`: NUL-terminated strings, sorted. Everything else refers to them by index.
+2. **Formulas** `formulas_at..inputs_at`: `u16 count`, then `count` × `(u16 name, u16 root node)`.
+3. **Inputs** `inputs_at..nodes_at`: `u16 count`, then per input `u16 name, u16 variable node, u16 n,
+   n × u16 node` — the nodes to recompute when the input changes.
+4. **Nodes** `nodes_at..`: `u16 count`, then per node `u32 size` (bytes after this field), `u16 kind,
+   u16 index` (sequential), `f32 stored value`, then u16 fields by kind:
+
+| Kind | Fields | Meaning |
+|---|---|---|
+| 1 variable | `name, node` | named value; `node` = the formula's root node, `0xFFFF` = input |
+| 2 chain | `n, operand, (op, operand)…` (`n` = number of u16 that follow) | `a op b op c …` evaluated left to right |
+| 3 negate | `1, operand` | `-x` |
+| 4 constant | (the f32 is repeated) | number |
+| 5 string | `name` | string literal (argument of `config`) |
+| 6 call | `name, argc, args…` | function call |
+
+Chain operators: `0 +`, `1 -`, `2 *`, `3 /`, `9 ==` (checked against all stored values), `7 >`, `8 >=`
+(inferred: two uses, `FINAL_CRI_B_chance > _RANDOM`, `FINAL_CRI_A_chance >= _RANDOM`; the stored values
+also fit `<`/`<=`). Codes 4-6 do not occur. No chain mixes `* /` after `+ -`, so precedence never matters;
+grouping is done with nested chains. Comparisons give 1 or 0.
+
+Functions: `min`, `max` (2+ arguments), `floor`, `clamp(x, low, high)`, `config(...)`. Division by zero
+occurs with default inputs (the stored value is then NaN/inf).
+
+## Semantics
+- `config('table', 'field', key)` and longer forms look a number up in a data table; the engine resolves
+  it. Not traced: the evaluator leaves it to a callback and otherwise keeps the stored value.
+- Player attributes are layered. For an attribute `X`:
+  `STEADY_X = BASE_X + ATTR_X + EQUIP_X + XINFA_X + WUKU_X + WUXUE_X + WUYIN_X + WORLD_X + TALENT_X`,
+  `FIXED_X` adds trial-mode switches (`IS_ATTR_TP`), `VARI_X` adds buffs
+  (`BUFF_X + AREA_BUFF_X + FIXED_X * (BUFF_X_RATE + AREA_BUFF_X_RATE) + …`), `X = FIXED_X + VARI_X`.
+  `ATTR_X` comes from the five body attributes (`CON_HP_X * STEADY_CON + …`).
+- Rate caps live here, e.g. `EFFECTIVE_CRI_PROB = min(FIXED_CRI_PROB / (1 + FIXED_JUDGE_ATTR_CORRECT_PARA), 0.8)`.
+- Variable names with a prefix and a dot (`B.`, `BB.`, `II.`) appear in combat formulas; presumably the
+  other party of a hit. Not traced.
+
+## Open
+- `config` argument forms and which table each name maps to.
+- Meaning of the header hash; whether the engine checks it.
+- Which source (gear, inner ways, …) fills which `EQUIP_*`/`XINFA_*`/… input.

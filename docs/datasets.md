@@ -51,7 +51,7 @@ The notes below are read off the rows, not from code, unless stated.
 - `formula_base_attrs` — 424 attributes: `prop_name_en` (key used everywhere), display name and format,
   conversion parameters. `formula_fight_calc_params`, `formula_damage_calc_config` — combat constants.
 - `entity_attr` — per-entity attribute rows; `calcpoint` — purpose not checked.
-- The formulas themselves are not tables: see "Formula files" in `hd-store.md`.
+- The formulas themselves are not tables: see `formula-ft.md` (`wwm-data formulas`).
 
 ### guild
 All `club_*` tables: skills and levels, buildings, events (`club_play_*`), Guild War

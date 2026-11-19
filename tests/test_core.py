@@ -289,3 +289,45 @@ def test_datasets_select_and_export(tmp_path):
     assert done == {"plain": {"rows": 2, "errors": 1}, "repeat": {"rows": 3, "errors": 0, "multi": True}}
     assert json.loads((tmp_path / "plain.json").read_text()) == {"2": {"a": 1}, "1": 40}      # bare value kept bare
     assert json.loads((tmp_path / "repeat.json").read_text()) == {"7": [{"a": 1}, {"a": 2}], "8": [{"a": 3}]}
+
+
+# ---- formula files ----
+
+def _ft(names, formulas, inputs, nodes):
+    """Build a formula file: nodes are (kind, value, [u16 fields])."""
+    import struct
+    name_blob = b"".join(n.encode() + b"\0" for n in names)
+    table = struct.pack(f"<{1 + 2 * len(formulas)}H", len(formulas), *[x for pair in formulas for x in pair])
+    deps = struct.pack("<H", len(inputs)) + b"".join(
+        struct.pack(f"<{3 + len(d)}H", name, node, len(d), *d) for name, node, d in inputs)
+    body = struct.pack("<H", len(nodes))
+    for i, (kind, value, args) in enumerate(nodes):
+        payload = struct.pack("<f", value) + struct.pack(f"<{len(args)}H", *args)
+        body += struct.pack("<IHH", 4 + len(payload), kind, i) + payload
+    a = 24 + len(name_blob)
+    return struct.pack("<6I", 1, 0, 24, a, a + len(table), a + len(table) + len(deps)) + name_blob + table + deps + body
+
+
+def test_formula_parse_text_evaluate():
+    from wwm import formula as fm
+    names = ["BASE", "CRIT", "EQUIP", "RATE", "config", "min", "tbl"]
+    nodes = [
+        (fm.VAR, 2.0, [2, fm.NO_NODE]),             # 0 EQUIP (input)
+        (fm.STRING, 0.0, [6]),                      # 1 'tbl'
+        (fm.CALL, 1.0, [4, 2, 1, 0]),               # 2 config('tbl', EQUIP)
+        (fm.VAR, 1.0, [0, 2]),                      # 3 BASE = node 2
+        (fm.CONST, 0.5, []),                        # 4 0.5
+        (fm.CHAIN, 1.5, [5, 3, 0, 0, 2, 4]),        # 5 (BASE + EQUIP * 0.5), left to right: (1 + 2) * 0.5
+        (fm.CONST, 0.8, []),                        # 6 0.8
+        (fm.CALL, 0.8, [5, 2, 5, 6]),               # 7 min(node 5, 0.8)
+        (fm.NEG, -0.8, [1, 7]),                     # 8 -node 7
+    ]
+    data = _ft(names, [(0, 2), (1, 7), (3, 8)], [(2, 0, [5, 7])], nodes)
+    f = fm.parse(data)
+    assert f.formulas == {"BASE": 2, "CRIT": 7, "RATE": 8} and f.inputs == {"EQUIP": (0, [5, 7])}
+    assert fm.text(f, 7) == "min((BASE + EQUIP * 0.5), 0.8)" and fm.text(f, 8) == "-min((BASE + EQUIP * 0.5), 0.8)"
+    assert fm.text(f, 2) == "config('tbl', EQUIP)" and fm.uses(f, 7) == ["BASE", "EQUIP"]
+    assert fm.check(f) == []                                             # stored values reproduce
+    got = fm.evaluate(f, {"EQUIP": 0.2}, config=lambda args: 0.1 if args == ["tbl", 0.2] else None)
+    assert abs(got["CRIT"] - 0.15) < 1e-6 and abs(got["RATE"] + 0.15) < 1e-6 and got["BASE"] == 0.1
+    assert fm.describe(f)["inputs"]["EQUIP"] == {"default": 2.0, "feeds": ["CRIT"]}
