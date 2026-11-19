@@ -234,3 +234,38 @@ def test_gamedata_export_kind():
     # keep_unnamed includes the blank one with name=None
     data2, count2, named2 = gamedata.export_kind(store, "kongfu", "kongfu_id", "name", [], True)
     assert count2 == 3 and named2 == 2 and data2["5"]["name"] is None
+
+
+# ---- tuning export ----
+
+def test_tuning_build():
+    import types
+    from wwm import tuning
+    tables = {
+        "formula_base_attrs": [{"_key": 329, "prop_name_en": "CRI_PROB", "prop_name_cn": "Critical Rate"}],
+        "equip_affix_config": [
+            {"_key": 1, "affix_para": 329, "affix_des": "", "random_weight": 930, "min_val": 0.052, "max_val": 0.104},
+            {"_key": 2, "affix_para": -1, "affix_des": "Restores HP.", "random_weight": 6},
+        ],
+        "equip_toning_group": [{"_key": 100930, "1": 930, "2": 6}],
+        "equip_determin_group": [{"_key": 908, "det_group": 1907, "type": 1, "cost": [2200028, 1]}],
+        "equip_attr_cols": [{"_key": 1, "base": ["MAX_W_ATK"]}],
+        "equip_items": [
+            {"_key": 11, "name": "Sword", "re_group": 100930, "det_group_21": 909, "det_group_1": 908,
+             "MAX_W_ATK": [[175, 175, 100]], "icon_no": "x.png", "re_reset_cost": [2233604, 2]},
+            {"_key": 12, "name": "Fishing Rod"},          # rolls nothing -> left out
+        ],
+        "stuff_items": [{"_key": 2233604, "name": "Modulating Stone"}, {"_key": 2200028, "name": "Attunement Stone"}],
+        "neigong_liupai_data": [{"_key": 3, "name": "Silkbind - Jade"}],
+    }
+    store = types.SimpleNamespace(manifest=types.SimpleNamespace(tables=tables),
+                                  table=lambda name: {"rows": tables[name]})
+    data, missing = tuning.build(store)
+    assert data["affixes"][1]["name"] == "Critical Rate" and data["affixes"][1]["attr"] == "CRI_PROB"
+    assert data["affixes"][2]["name"] == "Restores HP." and data["affixes"][2]["attr"] is None
+    assert data["pools"][100930] == {"1": 930, "2": 6}
+    assert data["items"] == {11: {"name": "Sword", "re_group": 100930, "re_reset_cost": [2233604, 2],
+                                  "det_groups": {1: 908, 21: 909}, "base_attrs": {"MAX_W_ATK": [[175, 175, 100]]}}}
+    assert data["materials"]["names"] == {2200028: "Attunement Stone", 2233604: "Modulating Stone"}
+    assert data["paths"] == {3: "Silkbind - Jade"}
+    assert "equip_toning_mode" in missing and "equip_items" not in missing

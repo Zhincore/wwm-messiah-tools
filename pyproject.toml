@@ -22,6 +22,7 @@ wwm-repository = "wwm.repository:main"
 wwm-tables = "wwm.tables:main"
 wwm-texture-index = "wwm.texture_index:main"
 wwm-textures = "wwm.textures:main"
+wwm-tuning = "wwm.tuning:main"
 wwm-ui-map = "wwm.ui_map:main"
 
 [build-system]

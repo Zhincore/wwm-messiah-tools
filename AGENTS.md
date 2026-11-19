@@ -22,6 +22,8 @@ Python package `wwm` in `tools/wwm/` (`pyproject.toml`, editable install in `.ve
   `--patch-field` in-place same-length edit of one row's string cell (re-zstd exact size, journalled,
   `--revert-patch`); only when the user asks, game closed. HD files are loose in `LocalData/Patch/HD/<region>/`
 - `gamedata.py` (`wwm-gamedata`) — static id→name export per kind from HD tables (English-resolved) + manifest
+- `tuning.py` (`wwm-tuning`) — static export of the gear roll tables (stat pools, weights, ranges, attunement,
+  costs) from HD tables; fields and roll math in `docs/gear-tuning.md`
 - `repository.py` — resource repository: `Repository.records()`, `guid_file_id()`; names for GUID-keyed files
 - `files.py` (`wwm-files export|override|revert|revert-all`) — `export` is read-only; the rest write to the install (patch pack + `Patch.mpkdb`
   row); only run when the user asks, game closed

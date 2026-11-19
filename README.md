@@ -153,6 +153,8 @@ Python package `wwm` in `tools/wwm/` (`pyproject.toml`); each tool is a console 
   list/dict constructors; see the module docstring)
 - `wwm-gamedata` — static id→name export per kind (gear/martialArt/innerWay/mysticSkill/avatar/banner/sect)
   from the HD tables, English-resolved, + manifest with game version; for id→name mapping (e.g. a bot)
+- `wwm-tuning` — static export of the gear roll tables: stat pools with weights and ranges, attunement,
+  tuning levels and costs, for every gear tier; fields and roll math in `docs/gear-tuning.md`
 - `wwm-tables` — HD store data tables (MANIFEST/index/data) + locale text; `--patch-field` edits one
   row's string cell in place (same length, exact-size re-zstd, journalled)
 - `wwm-repository` — resource repository: name ↔ GUID ↔ file id, types, dependencies
