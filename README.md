@@ -159,6 +159,8 @@ Python package `wwm` in `tools/wwm/` (`pyproject.toml`); each tool is a console 
   tuning levels and costs, for every gear tier; fields and roll math in `docs/gear-tuning.md`
 - `wwm-data formulas` — attribute formulas (`formula/*.ft`) decoded to readable text and JSON, with an
   evaluator; see `docs/formula-ft.md`
+- `wwm-data flows` — damage and heal flows (generated Lua in a `wwm-lua` dump) as plain readable Lua;
+  see `docs/damage-flows.md`
 - `wwm-tables` — HD store data tables (MANIFEST/index/data) + locale text; `--patch-field` edits one
   row's string cell in place (same length, exact-size re-zstd, journalled)
 - `wwm-repository` — resource repository: name ↔ GUID ↔ file id, types, dependencies

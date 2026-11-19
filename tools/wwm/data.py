@@ -6,6 +6,7 @@ Game-data exports from the HD data tables (read-only). Re-run after each game pa
   wwm-data names  <hd_dir> -o OUT                  id -> name maps per kind         (gamedata.py)
   wwm-data tuning <hd_dir> -o OUT                  gear roll tables, shaped         (tuning.py, docs/gear-tuning.md)
   wwm-data formulas <hd_dir> -o OUT                attribute formulas, decoded      (formula.py, docs/formula-ft.md)
+  wwm-data flows <lua_dump> -o OUT                 damage and heal flows, plain Lua (formula.py, docs/damage-flows.md)
 
 <hd_dir> is the HD store, e.g. <install>/LocalData/Patch/HD/oversea. `wwm-data <command> -h` for options.
 """
@@ -19,7 +20,7 @@ from . import datasets, formula, gamedata, tuning
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    sub = ap.add_subparsers(dest="command", required=True, metavar="{raw,names,tuning,formulas}")
+    sub = ap.add_subparsers(dest="command", required=True, metavar="{raw,names,tuning,formulas,flows}")
     for module in (datasets, gamedata, tuning, formula):
         module.add_parser(sub)
     args = ap.parse_args()

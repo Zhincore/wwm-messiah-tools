@@ -344,3 +344,10 @@ def test_formula_table_config():
     assert config(["avatar_base_attrs", "ACR_PROB", 5.0]) is None        # no such row
     assert config(["avatar_base_attrs", "name", 100.0]) is None          # not a number
     assert config(["nope", "ACR_PROB", 100.0]) is None                   # no such table
+
+
+def test_formula_plain_flow():
+    from wwm import formula as fm
+    src = "return function(_ENV)\n  if _ENV.BB.X < 0 then\n    _ENV.Y = -_ENV.BB.X / 2\n  end\n  _ENV.FLOW_RESULT = _ENV.Y\nend\n"
+    assert fm.plain_flow(src) == "if BB.X < 0 then\n  Y = -BB.X / 2\nend\nFLOW_RESULT = Y\n"
+    assert fm.plain_flow("x = _ENV.a\n") == "x = a\n\n"          # not wrapped: only the prefix goes

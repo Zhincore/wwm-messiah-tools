@@ -9,6 +9,10 @@ Usage:
   wwm-data formulas <hd_dir> -o OUT       # e.g. <install>/LocalData/Patch/HD/oversea
 Writes per file OUT/<name>.txt (`NAME = expression  # default value`) and OUT/<name>.json
 ({formulas: {name: {expr, default, uses}}, inputs: {name: {default, feeds}}}), plus manifest.json.
+
+  wwm-data flows <lua_dump> -o OUT        # <lua_dump> = output dir of `wwm-lua --unluac`
+Writes the damage/heal flows (generated Lua under hexm/common/formula_gen/code) as plain readable Lua,
+one OUT/<flow>.lua each; docs/damage-flows.md explains them.
 """
 
 from __future__ import annotations
@@ -16,6 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import struct
 import sys
 from dataclasses import dataclass
@@ -263,12 +268,43 @@ def describe(f: Formulas) -> dict:
     return {"formulas": formulas, "inputs": inputs}
 
 
+FLOW_DIR = Path("hexm/common/formula_gen/code")
+FLOW_WRAPPER = re.compile(r"\Areturn function\(_ENV\)\n(.*)\nend\s*\Z", re.S)
+
+
+def plain_flow(source: str) -> str:
+    """A generated flow without its `return function(_ENV) ... end` wrapper and `_ENV.` prefixes."""
+    wrapped = FLOW_WRAPPER.match(source)
+    body = wrapped.group(1) if wrapped else source
+    lines = [line[2:] if wrapped and line.startswith("  ") else line for line in body.split("\n")]
+    return "\n".join(lines).replace("_ENV.", "") + "\n"
+
+
+def run_flows(args) -> int:
+    source = Path(args.lua_dump) / FLOW_DIR
+    files = sorted(source.glob("*.lua"))
+    if not files:
+        print(f"no flows in {source}", file=sys.stderr)
+        return 1
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    for path in files:
+        (out / path.name).write_text(plain_flow(path.read_text(encoding="utf-8")), encoding="utf-8")
+    print(f"{len(files)} flows -> {out}")
+    return 0
+
+
 def add_parser(sub) -> None:
     ap = sub.add_parser("formulas", help="attribute formulas, decoded", description=__doc__,
                         formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("hd_dir", help="HD store dir, e.g. <install>/LocalData/Patch/HD/oversea")
     ap.add_argument("-o", "--out", required=True, help="output directory")
     ap.set_defaults(run=run)
+    ap = sub.add_parser("flows", help="damage and heal flows as plain Lua", description=__doc__,
+                        formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("lua_dump", help="decompiled Lua root (output of `wwm-lua --unluac`)")
+    ap.add_argument("-o", "--out", required=True, help="output directory")
+    ap.set_defaults(run=run_flows)
 
 
 def run(args) -> int:
