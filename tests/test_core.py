@@ -269,3 +269,23 @@ def test_tuning_build():
     assert data["materials"]["names"] == {2200028: "Attunement Stone", 2233604: "Modulating Stone"}
     assert data["paths"] == {3: "Silkbind - Jade"}
     assert "equip_toning_mode" in missing and "equip_items" not in missing
+
+
+# ---- dataset export ----
+
+def test_datasets_select_and_export(tmp_path):
+    import json
+    import types
+    from wwm import datasets
+    names = ["gacha_pool_common", "gacha_pool_common__grey", "activity_gacha_x", "maps.gacha_room", "rewards", "reward_x", "rewarding"]
+    assert datasets.select(names, datasets.DATASETS["gacha"][1]) == ["activity_gacha_x", "gacha_pool_common"]
+    assert datasets.select(names, datasets.DATASETS["rewards"][1]) == ["reward_x", "rewards"]
+    tables = {
+        "plain": {"errors": 1, "rows": [{"_key": 2, "a": 1}, {"_key": 1, "value": 40}]},
+        "repeat": {"errors": 0, "rows": [{"_key": 7, "a": 1}, {"_key": 7, "a": 2}, {"_key": 8, "a": 3}]},
+    }
+    store = types.SimpleNamespace(table=lambda name: tables[name])
+    done = datasets.export(store, tmp_path, ["plain", "repeat"])
+    assert done == {"plain": {"rows": 2, "errors": 1}, "repeat": {"rows": 3, "errors": 0, "multi": True}}
+    assert json.loads((tmp_path / "plain.json").read_text()) == {"2": {"a": 1}, "1": 40}      # bare value kept bare
+    assert json.loads((tmp_path / "repeat.json").read_text()) == {"7": [{"a": 1}, {"a": 2}], "8": [{"a": 3}]}

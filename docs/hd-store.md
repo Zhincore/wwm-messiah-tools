@@ -71,3 +71,16 @@ JOURNAL` restores them. The replacement must be no longer than the current value
 must still fit its stored size (a less-compressible edit can fail). HD files are loose, so this writes
 the file directly; close the game first (the tool refuses while `wwm.exe` runs). HD files are not in the
 per-launch essential list, so edits persist across normal launches (a repair/patch resets them).
+
+## Formula files (`formula/*.ft`) — not decoded
+Attribute formulas (`formula_player.ft`, `_npc`, `_pet`, ...) are not MTable containers. Observed layout:
+`u32 1, u32 hash?, u32 24 (header size), u32 off1, u32 off2, u32 off3`, then
+
+1. `24..off1`: NUL-separated names, sorted (4,227 in `formula_player.ft`: attribute keys such as `CRI_PROB`
+   and lower-case intermediates).
+2. `off1..off2`: u16 values (function unknown).
+3. `off2..off3`: variable-length u16 lists (function unknown).
+4. `off3..`: `u16 count`, then records `u32 size, u16 kind, u16 index, payload`. Seen: kind 1 with payload
+   `u32 0, u16 ref, u16 0xFFFF`; kind 4 with two equal f32 (a constant). Larger records follow.
+
+It looks like a compiled expression graph; operator meanings are unknown.
