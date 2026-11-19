@@ -218,6 +218,25 @@ def evaluate(f: Formulas, inputs: dict[str, float] | None = None, config: Config
     return {name: value(root) for name, root in f.formulas.items()}
 
 
+def table_config(store) -> Config:
+    """
+    config() backed by the HD tables: `config(table, field, key[, default])` = that field of the row whose key
+    is `key`. A missing table, row or field gives None, so the evaluator keeps the stored value.
+    """
+    tables: dict[str, dict | None] = {}
+
+    def lookup(args: list) -> float | None:
+        table, field, key = args[:3]
+        if table not in tables:
+            known = table in store.manifest.tables
+            tables[table] = {r["_key"]: r for r in store.table(table)["rows"]} if known else None
+        row = (tables[table] or {}).get(int(key)) if isinstance(key, float) and not math.isnan(key) else None
+        found = row.get(field) if row else None
+        return float(found) if isinstance(found, (int, float)) and not isinstance(found, bool) else None
+
+    return lookup
+
+
 def check(f: Formulas) -> list[str]:
     """Names of formulas whose value with default inputs differs from the value stored in the file."""
     bad = []

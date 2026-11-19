@@ -331,3 +331,16 @@ def test_formula_parse_text_evaluate():
     got = fm.evaluate(f, {"EQUIP": 0.2}, config=lambda args: 0.1 if args == ["tbl", 0.2] else None)
     assert abs(got["CRIT"] - 0.15) < 1e-6 and abs(got["RATE"] + 0.15) < 1e-6 and got["BASE"] == 0.1
     assert fm.describe(f)["inputs"]["EQUIP"] == {"default": 2.0, "feeds": ["CRIT"]}
+
+
+def test_formula_table_config():
+    import types
+    from wwm import formula as fm
+    rows = [{"_key": 100, "ACR_PROB": 0.65, "name": "x"}]
+    store = types.SimpleNamespace(manifest=types.SimpleNamespace(tables={"avatar_base_attrs": 1}),
+                                  table=lambda name: {"rows": rows})
+    config = fm.table_config(store)
+    assert config(["avatar_base_attrs", "ACR_PROB", 100.0]) == 0.65
+    assert config(["avatar_base_attrs", "ACR_PROB", 5.0]) is None        # no such row
+    assert config(["avatar_base_attrs", "name", 100.0]) is None          # not a number
+    assert config(["nope", "ACR_PROB", 100.0]) is None                   # no such table

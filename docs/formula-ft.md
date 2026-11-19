@@ -35,8 +35,11 @@ Functions: `min`, `max` (2+ arguments), `floor`, `clamp(x, low, high)`, `config(
 occurs with default inputs (the stored value is then NaN/inf).
 
 ## Semantics
-- `config('table', 'field', key)` and longer forms look a number up in a data table; the engine resolves
-  it. Not traced: the evaluator leaves it to a callback and otherwise keeps the stored value.
+- `config('table', 'field', key[, default])` reads `field` of the row with that key in an HD data table
+  (`avatar_base_attrs` by level, `attr_first_level_trans`, `avatar_world_attrs`, `id_attr_trans_rate`, …).
+  Checked: the nine lookups whose default key has a row (`attr_first_level_trans`, key 1) equal the table
+  cells. With no such row the stored value is the 4th argument when present, else 1. Two table names
+  (`work_level_inc_attr`, `guild_dianxiu_attr_data`) are not HD tables. `formula.table_config(store)` is this lookup.
 - Player attributes are layered. For an attribute `X`:
   `STEADY_X = BASE_X + ATTR_X + EQUIP_X + XINFA_X + WUKU_X + WUXUE_X + WUYIN_X + WORLD_X + TALENT_X`,
   `FIXED_X` adds trial-mode switches (`IS_ATTR_TP`), `VARI_X` adds buffs
@@ -47,6 +50,6 @@ occurs with default inputs (the stored value is then NaN/inf).
   other party of a hit. Not traced.
 
 ## Open
-- `config` argument forms and which table each name maps to.
+- Where `work_level_inc_attr` and `guild_dianxiu_attr_data` come from.
 - Meaning of the header hash; whether the engine checks it.
 - Which source (gear, inner ways, …) fills which `EQUIP_*`/`XINFA_*`/… input.
