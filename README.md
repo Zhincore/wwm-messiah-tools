@@ -151,6 +151,8 @@ Python package `wwm` in `tools/wwm/` (`pyproject.toml`); each tool is a console 
 - `wwm-build-luac` — build `lua`/`luac` 5.4 with the game's opcode numbering; reads and lists game
   bytecode, but its compiler output is not game-compatible (generic-for slots, metamethod indexes,
   list/dict constructors; see the module docstring)
+- `wwm-scripts` — runs your own Lua files in the client: installs a loader into an install (boot line in
+  the cached hotfixes, journalled, `uninstall` restores) and manages the scripts it runs; see `docs/scripts.md`
 - `wwm-data names` — static id→name export per kind (gear/martialArt/innerWay/mysticSkill/avatar/banner/sect)
   from the HD tables, English-resolved, + manifest with game version; for id→name mapping (e.g. a bot)
 - `wwm-data raw` — bulk export of HD tables by topic (gacha, rewards, gear, inner ways, martial arts,

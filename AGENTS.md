@@ -21,6 +21,9 @@ Python package `wwm` in `tools/wwm/` (`pyproject.toml`, editable install in `.ve
 - `tables.py` — HD store data tables: `Store.table(name)`, `Locale` text ids; `--list/--table/--dump`;
   `--patch-field` in-place same-length edit of one row's string cell (re-zstd exact size, journalled,
   `--revert-patch`); only when the user asks, game closed. HD files are loose in `LocalData/Patch/HD/<region>/`
+- `scripts.py` (`wwm-scripts <game_dir> status|install|uninstall|add|enable|disable|remove`) — script loader
+  (`script_loader.lua`) in `LocalData/userscripts/` + boot line prepended to cached hotfixes in `LocalDB/db_mp`
+  (journal in `userscripts/journal.json`); writes to the install: only when the user asks, game closed; `docs/scripts.md`
 - `data.py` (`wwm-data raw|names|tuning|formulas|flows`) — the one CLI for the read-only table exports below
 - `gamedata.py` (`wwm-data names`) — static id→name export per kind from HD tables (English-resolved) + manifest
 - `datasets.py` (`wwm-data raw`) — bulk export of HD tables by topic (`DATASETS`: gacha, rewards, gear,

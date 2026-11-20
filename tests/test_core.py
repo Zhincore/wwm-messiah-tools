@@ -351,3 +351,57 @@ def test_formula_plain_flow():
     src = "return function(_ENV)\n  if _ENV.BB.X < 0 then\n    _ENV.Y = -_ENV.BB.X / 2\n  end\n  _ENV.FLOW_RESULT = _ENV.Y\nend\n"
     assert fm.plain_flow(src) == "if BB.X < 0 then\n  Y = -BB.X / 2\nend\nFLOW_RESULT = Y\n"
     assert fm.plain_flow("x = _ENV.a\n") == "x = a\n\n"          # not wrapped: only the prefix goes
+
+
+def _hotfix_db(path: Path, codes: dict[str, str]) -> None:
+    from wwm import scripts
+    con = sqlite3.connect(path)
+    con.execute("create table localdb (key text, scope text, content blob)")
+    con.executemany("insert into localdb values (?, 'g', ?)", [(k, scripts.encode(c)) for k, c in codes.items()])
+    con.execute("insert into localdb values ('hotfix_meta', 'g', ?)", (b"\x00meta",))
+    con.commit()
+    con.close()
+
+
+def test_scripts_install_uninstall_round_trip(tmp_path):
+    from wwm import scripts
+    (tmp_path / "LocalData" / "LocalDB").mkdir(parents=True)
+    inst = scripts.Install(tmp_path)
+    _hotfix_db(inst.db, {"hotfix_1": "print(1)", "hotfix_2": "print(2)"})
+    before = sqlite3.connect(inst.db).execute("select key, content from localdb order by key").fetchall()
+
+    assert scripts.cmd_install(inst, None) == 0
+    assert scripts.hotfix_state(inst.db) == (2, 2)
+    assert (inst.dir / "loader.lua").is_file()
+    code = scripts.decode(sqlite3.connect(inst.db).execute("select content from localdb where key='hotfix_1'").fetchone()[0])
+    assert code == scripts.BOOT + "\n;print(1)"
+
+    # the game replaces one hotfix; a second install patches only that one and keeps the first journal entry
+    con = sqlite3.connect(inst.db)
+    con.execute("update localdb set content=? where key='hotfix_2'", (scripts.encode("print(22)"),))
+    con.commit()
+    con.close()
+    assert scripts.hotfix_state(inst.db) == (2, 1)
+    assert scripts.patch_hotfixes(inst) == 1
+
+    assert scripts.cmd_uninstall(inst, None) == 0
+    after = dict(sqlite3.connect(inst.db).execute("select key, content from localdb").fetchall())
+    assert after["hotfix_1"] == dict(before)["hotfix_1"]
+    assert scripts.decode(after["hotfix_2"]) == "print(22)"
+    assert after["hotfix_meta"] == b"\x00meta"
+    assert not inst.journal.exists() and not (inst.dir / "loader.lua").exists()
+
+
+def test_scripts_add_enable_remove(tmp_path):
+    import argparse
+    from wwm import scripts
+    (tmp_path / "LocalData").mkdir()
+    inst = scripts.Install(tmp_path)
+    for name in ("hello", "second"):
+        (tmp_path / f"{name}.lua").write_text("local ctx = ... ctx.log('hi')")
+    scripts.cmd_add(inst, argparse.Namespace(names=[str(tmp_path / "hello.lua"), str(tmp_path / "second.lua")]))
+    assert inst.enabled() == ["hello", "second"] and inst.available() == ["hello", "second"]
+    scripts.cmd_toggle(inst, argparse.Namespace(cmd="disable", names=["hello"]))
+    assert inst.enabled() == ["second"] and (inst.dir / "hello.lua").exists()
+    scripts.cmd_toggle(inst, argparse.Namespace(cmd="remove", names=["second"]))
+    assert inst.enabled() == [] and inst.available() == ["hello"]
