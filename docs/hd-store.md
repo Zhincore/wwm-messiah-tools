@@ -86,12 +86,11 @@ Which copy to edit, and whether an edit lasts:
 - The tool edits the file in the directory it is given. Editing a package file that also has a
   patch-directory copy is presumably shadowed by that copy (see "Two copies" above).
 - The patcher's per-launch essential list (`StageFinish:_collect_essential_files`, `patch/patcher_stage/
-  stage_finish.lua`) includes patch-directory HD files that the patchlist lists: `HD/MANIFEST`, the
-  `HD/data*` / `HD/index*` it finds, `HD/formula/*.ft` and `HD/locale/*_diff`. Package files are not
-  on it.
-- Unconfirmed: the code lists `HD/<name>` at the patch directory root, while the install keeps these
-  files in `HD/<region>/`. `essential.txt` is encrypted, so whether patch-directory HD edits are
-  detected is unknown. A repair or patch rewrites either copy.
+  stage_finish.lua`) adds HD candidates at the patch directory root (`HD/MANIFEST`, `HD/data*` /
+  `HD/index*`, `HD/formula/*.ft`, `HD/locale/*_diff`) and keeps only those the patchlist lists.
+- On a Steam global build (Nov 2026) the resulting `LocalData/Patch/essential.txt` (decode with
+  `wwm-decode-text`) held five entries: `LT1.mpk`, `LT1.mpkinfo` and three numeric ids. It had no HD
+  file, so neither copy of the store is checked per launch there. A repair or patch rewrites either copy.
 
 ## Formula files (`formula/*.ft`)
 Not MTable containers; decoded, see `formula-ft.md`.
