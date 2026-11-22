@@ -20,7 +20,8 @@ Python package `wwm` in `tools/wwm/` (`pyproject.toml`, editable install in `.ve
   correctly in the game (gaps in the docstring)
 - `tables.py` — HD store data tables: `Store.table(name)`, `Locale` text ids; `--list/--table/--dump`;
   `--patch-field` in-place same-length edit of one row's string cell (re-zstd exact size, journalled,
-  `--revert-patch`); only when the user asks, game closed. HD files are loose in `LocalData/Patch/HD/<region>/`
+  `--revert-patch`); only when the user asks, game closed. HD files are loose in `Package/HD/<region>/`; hotfixes put
+  newer copies of some (MANIFEST, patch index/data) in `LocalData/Patch/HD/<region>/` (`docs/hd-store.md`)
 - `scripts.py` (`wwm-scripts <game_dir> status|install|uninstall|add|enable|disable|remove`) — script loader
   (`script_loader.lua`) in `LocalData/userscripts/` + boot line prepended to cached hotfixes in `LocalDB/db_mp`
   (journal in `userscripts/journal.json`); writes to the install: only when the user asks, game closed; `docs/scripts.md`

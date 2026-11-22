@@ -55,8 +55,9 @@ Consequence: a file the patcher opens before step 3 registers the database is re
 whatever the database says (confirmed with the login video).
 
 Per-launch verification (essential list, `essential.txt`, hash checked against `essential_list_md5` in
-`meta`) hashes every `LT*.mpk` / `LT*.mpkinfo` as a whole file, plus the HD store files and the
-TinyFiles/MpkCached/MpkSorted indexes. `Resources.mpk` is not on it. Any byte changed in an LT pack marks
+`meta`) hashes every `LT*.mpk` / `LT*.mpkinfo` as a whole file, plus the TinyFiles/MpkCached/MpkSorted
+indexes and the HD store files in the patch directory (not those in `Package/HD`; details and an open
+question in `hd-store.md`). `Resources.mpk` is not on it. Any byte changed in an LT pack marks
 the pack corrupt and it is downloaded again; patchlist hashes of other files are checked on patch and
 repair, so a repair restores overwritten bytes.
 

@@ -4,6 +4,17 @@
 `locale/translate_words_map_<lang>[_diff]`. Reader: `tools/wwm/tables.py` (`wwm-tables`). Verified by decoding all
 114,171 tables (10.08 M rows) of a Steam global build.
 
+## Two copies: package and patch directory
+Hotfixes write newer copies of some store files to `LocalData/Patch/HD/<region>/`. On a Steam global
+build (Nov 2026) these were `MANIFEST`, `index1001`, `index1200`, `data1005`, `data1201`, plus `formula/`
+and `locale/`, all larger and newer than the same names in `Package/HD/<region>/`. The game is assumed
+to read the patch-directory copy first, as it does for other patched files (not tested for HD).
+
+`wwm-tables` reads one directory. Given `Package/HD/<region>/` alone, it can return rows from before the
+latest hotfix. For the current state, read a directory that holds the package files with the patch
+directory's files in their place (for example, symlinks). In the one comparison made, `setting_items`
+and `gpu_table_data` decoded to the same rows either way.
+
 ## Container
 All files are `0xDEADBEEF` containers of independently compressed blocks. Each block has a 9-byte
 header followed by a zstd frame (see `Container` in `tools/wwm/tables.py`).
@@ -69,8 +80,18 @@ spaces) so neighbouring rows and shard offsets do not move, then re-zstd's the b
 size (empty-block padding, as for EZST). The original block bytes are journalled; `--revert-patch
 JOURNAL` restores them. The replacement must be no longer than the current value, and the edited block
 must still fit its stored size (a less-compressible edit can fail). HD files are loose, so this writes
-the file directly; close the game first (the tool refuses while `wwm.exe` runs). HD files are not in the
-per-launch essential list, so edits persist across normal launches (a repair/patch resets them).
+the file directly; close the game first (the tool refuses while `wwm.exe` runs).
+
+Which copy to edit, and whether an edit lasts:
+- The tool edits the file in the directory it is given. Editing a package file that also has a
+  patch-directory copy is presumably shadowed by that copy (see "Two copies" above).
+- The patcher's per-launch essential list (`StageFinish:_collect_essential_files`, `patch/patcher_stage/
+  stage_finish.lua`) includes patch-directory HD files that the patchlist lists: `HD/MANIFEST`, the
+  `HD/data*` / `HD/index*` it finds, `HD/formula/*.ft` and `HD/locale/*_diff`. Package files are not
+  on it.
+- Unconfirmed: the code lists `HD/<name>` at the patch directory root, while the install keeps these
+  files in `HD/<region>/`. `essential.txt` is encrypted, so whether patch-directory HD edits are
+  detected is unknown. A repair or patch rewrites either copy.
 
 ## Formula files (`formula/*.ft`)
 Not MTable containers; decoded, see `formula-ft.md`.

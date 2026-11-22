@@ -111,7 +111,9 @@ registers, `NEWTABLE` variants have no `EXTRAARG`. `tools/unluac-messiah.patch` 
 
 ### Data tables (HD store)
 `Package/HD/<region>/`: `MANIFEST`, `index{n}`, `data{n}` hold ~114k named tables (`MTable`), read by
-`wwm-tables`. All three are `0xDEADBEEF` containers of zstd blocks. Full layout: `docs/hd-store.md`.
+`wwm-tables`. All three are `0xDEADBEEF` containers of zstd blocks. Hotfixes write newer copies of
+some of these files to `LocalData/Patch/HD/<region>/`; read those in place of the package ones for current
+data. Full layout: `docs/hd-store.md`.
 - MANIFEST: table names + 32-byte records `rows, shard_count, schema_ptr, patch_schema_ptr, hash, 0,
   first_shard, kind`, then a shard array of `(ptr, patch_ptr)`; `ptr = (block << 16) | index file number`.
 - Schema block: field-name list; a cell's field id is its position.
