@@ -28,6 +28,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import math
 import re
 import struct
 import sys
@@ -116,24 +117,33 @@ def _decode_block(data: bytes, desc_start: int) -> Block:
     streams = [_parse_layout(s) for s in descriptors if s != "None" and _DESC_RE.search(s.encode())]
     if not streams:
         raise ValueError("no vertex streams")
+    # Cheap sanity gate: rejects non-mesh payloads whose bytes merely contain a descriptor-like
+    # sequence (skeletons/materials), so the buffer search only runs on plausible meshes.
+    if not (0 < vcount <= 2_000_000 and 3 <= icount <= 20_000_000 and icount % 3 == 0):
+        raise ValueError("implausible vertex/index counts")
 
     bbox = struct.unpack_from("<6f", data, pos)
+    if not all(b == b and abs(b) < 1e5 for b in bbox) or any(bbox[i] > bbox[i + 3] for i in range(3)):
+        raise ValueError("implausible bounding box")
     pos += 24
-    subgrids = []
-    for i in range(subgrid_count):
-        rec = struct.unpack_from("<8I", data, pos + i * 32)
-        subgrids.append((rec[4], rec[5], rec[6], rec[7]))
-    pos += subgrid_count * 32
+    region = pos  # subgrid table + index/vertex buffers follow, in a layout that varies by mesh
 
-    indices = list(struct.unpack_from("<%dH" % icount, data, pos))
-    pos += icount * 2
-
-    vtx = pos
     s0 = streams[0]
-    positions, uvs, normals = [], [], []
     poff = _attr_offset(s0, "POSITION")
+    if poff is None:
+        raise ValueError("stream has no position")
+    vsize = vcount * sum(s.stride for s in streams)
+
+    # The subgrid-table size and whether the index buffer precedes or follows the vertices are not
+    # fixed across meshes, so the buffers are found by search: the vertex offset whose positions
+    # reproduce the stored bbox AND that has a non-degenerate in-range index buffer on one side.
+    vtx, idx_off, indices = _locate_buffers(data, region, vcount, icount, s0, poff, bbox, vsize)
+    if vtx is None:
+        raise ValueError("vertex/index buffers not found")
+
     uoff = _attr_offset(s0, "TEXCOORD", fmt="F")
     noff = _attr_offset(s0, "NORMAL", fmt="B")
+    positions, uvs, normals = [], [], []
     for i in range(vcount):
         base = vtx + i * s0.stride
         positions.append(struct.unpack_from("<3f", data, base + poff))
@@ -143,9 +153,88 @@ def _decode_block(data: bytes, desc_start: int) -> Block:
             normals.append(tuple(b / 127.5 - 1.0 for b in nb))
         else:
             normals.append((0.0, 0.0, 0.0))
-    end = vtx + vcount * sum(s.stride for s in streams) + _TRAILER_BBOX
+
+    subgrids = _read_subgrids(data, region, subgrid_count, vtx)
+    idx_end = (idx_off + icount * 2) if idx_off is not None else 0
+    end = max(vtx + vsize, idx_end) + _TRAILER_BBOX
     return Block(identifier, subgrids, vcount, icount, streams,
                  bbox[:3], bbox[3:], indices, positions, uvs, normals, end)
+
+
+def _bbox_tol(bbox: tuple[float, ...]) -> float:
+    """Tolerance scaled by the bbox diagonal (the stored bbox is slightly padded vs the vertices)."""
+    diag = math.dist(bbox[:3], bbox[3:])
+    return 2e-3 + 0.02 * diag
+
+
+def _bbox_at(data: bytes, off: int, poff: int, stride: int, vcount: int,
+             bbox: tuple[float, ...], tol: float) -> bool:
+    """True when `vcount` positions at `off` fit inside `bbox` and fill most of it (early-exit)."""
+    lo_x, lo_y, lo_z, hi_x, hi_y, hi_z = bbox
+    base = off + poff
+    mnx = mny = mnz = float("inf")
+    mxx = mxy = mxz = float("-inf")
+    for i in range(vcount):
+        x, y, z = struct.unpack_from("<3f", data, base + i * stride)
+        if x != x or abs(x) > 1e5 or abs(y) > 1e5 or abs(z) > 1e5:
+            return False
+        mnx, mny, mnz = min(mnx, x), min(mny, y), min(mnz, z)
+        mxx, mxy, mxz = max(mxx, x), max(mxy, y), max(mxz, z)
+        if mnx < lo_x - tol or mny < lo_y - tol or mnz < lo_z - tol or \
+           mxx > hi_x + tol or mxy > hi_y + tol or mxz > hi_z + tol:
+            return False
+    # Reject a tiny coincidental cluster: the decoded extent must cover most of the stored bbox.
+    diag = math.dist(bbox[:3], bbox[3:])
+    got = math.dist((mnx, mny, mnz), (mxx, mxy, mxz))
+    return got >= 0.5 * diag - tol
+
+
+def _index_side(data: bytes, off: int, vcount: int, icount: int):
+    """If `icount` u16 at `off` are all < vcount, return (list, degenerate_tri_count); else None."""
+    if off < 0 or off + icount * 2 > len(data):
+        return None
+    vals = struct.unpack_from("<%dH" % icount, data, off)
+    if max(vals) >= vcount:
+        return None
+    degen = sum(1 for t in range(0, icount - 2, 3)
+                if vals[t] == vals[t + 1] or vals[t + 1] == vals[t + 2] or vals[t] == vals[t + 2])
+    return list(vals), degen
+
+
+def _locate_buffers(data: bytes, start: int, vcount: int, icount: int, s0: Stream, poff: int,
+                    bbox: tuple[float, ...], vsize: int):
+    """Find (vtx_off, idx_off, indices): the vertex offset reproducing `bbox` with an in-range,
+    mostly-non-degenerate index buffer on either side. Returns (None, None, []) if nothing fits."""
+    stride = s0.stride
+    tol = _bbox_tol(bbox)
+    window = min(len(data) - vcount * stride, start + icount * 2 + 4096)
+    max_degen = max(1, icount // 3 // 2)  # tolerate up to half-degenerate (strips, padding)
+    off = start
+    while off <= window:
+        if _bbox_at(data, off, poff, stride, vcount, bbox, tol):
+            best = None
+            for cand in (off - icount * 2, off + vsize):
+                side = _index_side(data, cand, vcount, icount)
+                if side and (best is None or side[1] < best[2]):
+                    best = (cand, side[0], side[1])
+            if best and best[2] <= max_degen:
+                return off, best[0], best[1]
+            # bbox matched but no usable index buffer: keep scanning (symmetric false positive)
+        off += 2
+    return None, None, []
+
+
+def _read_subgrids(data: bytes, region: int, count: int, vtx: int):
+    """Best-effort submesh ranges (start_index, index_count, start_vertex, vertex_count), 32B each."""
+    out = []
+    if count and region + count * 32 <= vtx:
+        for i in range(count):
+            try:
+                rec = struct.unpack_from("<8I", data, region + i * 32)
+                out.append((rec[4], rec[5], rec[6], rec[7]))
+            except struct.error:
+                break
+    return out
 
 
 def _attr_offset(stream: Stream, semantic: str, fmt: str | None = None) -> int | None:
@@ -189,16 +278,19 @@ def parse(data: bytes) -> list[Block]:
     return blocks
 
 
-def bbox_matches(block: Block, tol: float = 1e-3) -> bool:
-    """True when decoded positions reproduce the stored bounding box (a decode self-check)."""
+def bbox_matches(block: Block) -> bool:
+    """Decode self-check: positions sit inside the (slightly padded) stored bbox and fill most of it."""
     if not block.positions:
         return False
+    bbox = (*block.bbox_min, *block.bbox_max)
+    tol = _bbox_tol(bbox)
     xs = [p[0] for p in block.positions]
     ys = [p[1] for p in block.positions]
     zs = [p[2] for p in block.positions]
-    got = (min(xs), min(ys), min(zs), max(xs), max(ys), max(zs))
-    want = (*block.bbox_min, *block.bbox_max)
-    return all(abs(a - b) <= tol for a, b in zip(got, want))
+    lo, hi = (min(xs), min(ys), min(zs)), (max(xs), max(ys), max(zs))
+    if any(lo[i] < block.bbox_min[i] - tol or hi[i] > block.bbox_max[i] + tol for i in range(3)):
+        return False
+    return math.dist(lo, hi) >= 0.5 * math.dist(block.bbox_min, block.bbox_max) - tol
 
 
 def to_obj(blocks: list[Block], name: str) -> str:
