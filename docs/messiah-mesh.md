@@ -93,6 +93,6 @@ location and are rejected.
 - Normal/tangent exact packing (sign convention, the 4th component) is approximate; tangents,
   binormals, vertex colour and skin weights are parsed but not written to OBJ.
 
-Reconciles and extends the partial ResHax findings (topic 203, MeshToOBJ): header = magic + pad +
+Reconciles and extends the partial ResHax findings ([MESSIAH MeshToOBJ](https://reshax.com/topic/203-messiah-meshtoobj-meshmodel/)): header = magic + pad +
 length, length-prefixed descriptor strings, `index_count × u16`, vertex stride from the descriptors —
 and adds the self-locating buffer layout (index before/after, padded bbox) that generic converters miss.
