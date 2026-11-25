@@ -409,40 +409,40 @@ def test_scripts_add_enable_remove(tmp_path):
 
 # ---- mesh decode ----
 
-def _build_mesh(verts, tris):
+def _build_mesh(verts, tris, index_first=True):
     """A minimal single-stream (P3F_N4B_T2F) .MESSIAH int-mesh payload for the decoder."""
-    xs = [v[0] for v in verts]; ys = [v[1] for v in verts]; zs = [v[2] for v in verts]
-    bbox = (min(xs), min(ys), min(zs), max(xs), max(ys), max(zs))
+    bbox = (*(min(v[i] for v in verts) for i in range(3)), *(max(v[i] for v in verts) for i in range(3)))
     idx = [i for t in tris for i in t]
     vc, ic = len(verts), len(idx)
     descs = b"".join(struct.pack("<H", len(s)) + s for s in (b"P3F_N4B_T2F", b"None", b"None", b"None"))
     vtx = b"".join(struct.pack("<3f", *v) + b"\x80\x80\x80\xff" + struct.pack("<2f", 0.0, 0.0) for v in verts)
+    ibuf = struct.pack(f"<{ic}H", *idx)
     body = (struct.pack("<HHII", 0, 1, vc, ic) + descs
             + struct.pack("<6f", *bbox)
-            + struct.pack("<8I", 0, 0, 0, 0, 0, ic, 0, vc)        # subgrid: ... start_idx, idx_cnt, start_vtx, vtx_cnt
-            + struct.pack("<%dH" % ic, *idx) + vtx + b"\x00" * 52)
+            + struct.pack("<8I", 0, 0, 0, 0, 0, ic, 0, vc)  # subgrid: ..., start_idx, idx_cnt, start_vtx, vtx_cnt
+            + (ibuf + vtx if index_first else vtx + ibuf) + b"\x00" * 52)
     return b".MESSIAH" + struct.pack("<II", 8, len(body)) + body
 
 
-def test_mesh_parse_and_obj():
+@pytest.mark.parametrize("index_first", [True, False])
+def test_mesh_parse_and_obj(index_first):
     from wwm import mesh
     verts = [(-1.0, 0.0, -1.0), (1.0, 0.0, -1.0), (1.0, 0.0, 1.0), (-1.0, 0.0, 1.0)]
     tris = [(0, 1, 2), (0, 2, 3)]
-    payload = _build_mesh(verts, tris)
-    blocks = mesh.parse(payload)
+    blocks = mesh.parse(_build_mesh(verts, tris, index_first))
     assert len(blocks) == 1
     b = blocks[0]
     assert b.vertex_count == 4 and b.index_count == 6
     assert b.streams[0].stride == 24 and b.streams[0].layout == "P3F_N4B_T2F"
     assert [tuple(round(c, 3) for c in p) for p in b.positions] == verts
     assert b.indices == [0, 1, 2, 0, 2, 3]
+    assert b.subgrids == [(0, 6, 0, 4)]
     assert mesh.bbox_matches(b)
     obj = mesh.to_obj(blocks, "t")
-    assert obj.count("\nv ") == 4 and obj.count("\nf ") == 2
+    assert obj.count("\nv ") == 4 and obj.count("\nvn ") == 4 and obj.count("\nf ") == 2
 
 
 def test_mesh_rejects_non_mesh():
     from wwm import mesh
-    import pytest as _pytest
-    with _pytest.raises(ValueError):
+    with pytest.raises(ValueError):
         mesh.parse(b".MESSIAH" + struct.pack("<II", 3, 4) + b"PBR_mat\x00")

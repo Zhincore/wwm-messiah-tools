@@ -9,7 +9,8 @@ as a FourCC. `wwm-mesh` handles the mesh-geometry sub-types; the rest are other 
 | int `1` | SkinSkeleton | bone chains (`Bip001 *`, `Bone_*_jnt`), each a 3×4 transform |
 | int `3` | Material | name, shader, `key=value` params with GUID texture refs |
 | int `0` | texture/import stub | small text (`<name>.png\nsize:…\nfilter:…`) |
-| int `2`, `8` / `HRMD` / `SEMC` | **Mesh geometry** | handled by `wwm-mesh` |
+| int `8` / `HRMD` / `SEMC` | **Mesh geometry** | handled by `wwm-mesh` |
+| int `2`, `5`, `DOMC` / `DOMD` / `ASCC` | other object kinds | no vertex descriptor |
 
 A mesh container holds one or more **blocks** (LODs / parts). Each block has a fixed head:
 
@@ -32,8 +33,8 @@ and the **vertex streams** (planar: one contiguous block per layout), then a 52-
 subgrid-record size and whether the index buffer precedes or follows the vertices **are not fixed**
 across meshes, so a single hard offset table does not work. The decoder instead *locates* the
 buffers: the vertex offset is the one whose `vertex_count` positions fall inside the stored bbox and
-fill most of it, with an in-range, mostly-non-degenerate index buffer on one side. This is robust to
-the layout variants and self-validating (see "self-check" below).
+fill most of it (≥ half its diagonal), with an in-range, at most half-degenerate index buffer
+directly before or after it. A block where nothing fits is rejected, never exported as wrong geometry.
 
 A subgrid (submesh) record's last four `u32` are `start_index, index_count, start_vertex,
 vertex_count` — the draw ranges into the shared buffers.
@@ -58,14 +59,12 @@ Attributes seen across the install: `P3F`, `C4B` (vertex colour), `N4B`, `T2F` (
 | `T4H_B4H` | 16 | tangent half×4, binormal half×4 |
 | `W4B_I4B` | 8 | skin weights u8×4, bone indices u8×4 (skinned meshes only) |
 
-The stored bbox gives a decode **self-check**: the decoded positions must sit inside it (it is padded
-slightly) and fill most of it. `wwm-mesh` reports `self-check ok`/`MISMATCH`, and `export` refuses a
-mismatch without `--force`, so a mislocated buffer is flagged rather than written as wrong geometry.
+Normals decode as `u8 / 127.5 − 1` (xyz; 4th byte unused); OBJ `vt` flips V (`1 − v`).
 
 ## Tool
 
 ```
-wwm-mesh inspect <file>            # sub-type, blocks, counts, layouts, bbox + self-check
+wwm-mesh inspect <file>            # sub-type, blocks, counts, layouts, bbox
 wwm-mesh export  <file> -o out.obj # positions + UV + normals + faces, one object per block
 ```
 
@@ -75,20 +74,19 @@ skin weights are parsed but not written (OBJ has no slot for them).
 
 ## Sub-type census
 
-Across a sweep of the install (`.MESSIAH` block counts): `int3` material (most common), `int1`
-skeleton, `int8` mesh, `int5` skeleton/other, FourCCs `DOMC`/`DOMD`/`ASCC` (non-mesh; no vertex
-descriptor), `int2`, `int0` texture stubs, `HRMD`/`SEMC` (large rigged meshes). Only `int8`, `HRMD`,
-`SEMC` carry a vertex descriptor and decode as geometry; `int2` does not (different object kind).
+Across a sweep of the install (`.MESSIAH` block counts, most common first): `int3` material, `int1`
+skeleton, `int8` mesh, `int5` skeleton/other, `DOMC`/`DOMD`/`ASCC`, `int2`, `int0` texture stubs,
+`HRMD`/`SEMC` (large rigged meshes).
 
 ## Coverage
 
-On the swept `int8` meshes the self-check passes for ~99.9% (a handful fail to locate buffers and are
-rejected, not mis-decoded). `HRMD`/`SEMC` decode including multiple LOD/part blocks.
+On the swept `int8` meshes ~99.97% decode (24 307 / 24 315, lite install); the rest fail buffer
+location and are rejected.
+`HRMD`/`SEMC` decode including multiple LOD/part blocks.
 
 ## Open
 
-- A few mesh variants (small / unusual layouts) still fail buffer location (<0.5%); they are rejected
-  by the self-check rather than exported wrong.
+- The few `int8` variants that fail buffer location (small / unusual layouts).
 - `SEMC` payloads can carry a large trailer after the mesh with no second vertex descriptor
   (purpose not yet identified; not needed for the geometry).
 - Subgrid-record first 16 bytes and the trailer's full meaning are not decoded.

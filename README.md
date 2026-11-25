@@ -174,7 +174,7 @@ Python package `wwm` in `tools/wwm/` (`pyproject.toml`); each tool is a console 
   database before packages); `override`/`revert` change one entry through `Patch.mpkdb` or in its pack
   and undo it (journalled). Used to verify the resolution and stored-form findings in `docs/patching.md`.
 - `tests/` — pytest on synthetic data: file ids, codecs, block packs, override/export/revert round trips
-- `docs/` — format notes: `file-id.md`, `hd-store.md`, `patching.md`, `resource-names.md`, `chat-markup.md`, `lighting.md`
+- `docs/` — format notes: `file-id.md`, `hd-store.md`, `patching.md`, `resource-names.md`, `chat-markup.md`
 - `mpk/` — Rust: v1 reader (Diablo Immortal era) and v3 `.mpkinfo` parser
 - `texture/` — Rust: EZST codec, texture container parser, PNG/DDS conversion
   (`cargo run -p messiah-texture -- <payload files or dir> -o OUT [--dds]`)

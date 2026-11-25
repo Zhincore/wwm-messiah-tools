@@ -34,7 +34,7 @@ Python package `wwm` in `tools/wwm/` (`pyproject.toml`, editable install in `.ve
 - `formula.py` (`wwm-data formulas`) — attribute formula files (`formula/*.ft`): `parse`, `text`, `evaluate`,
   `check` (stored values reproduce); `docs/formula-ft.md`. `wwm-data flows` = damage/heal flows from a Lua
   dump as plain Lua; `docs/damage-flows.md`
-- `mesh.py` (`wwm-mesh inspect|export`) — `.MESSIAH` mesh geometry (sub-types int `2`/`8`, `HRMD`, `SEMC`)
+- `mesh.py` (`wwm-mesh inspect|export`) — `.MESSIAH` mesh geometry (sub-types int `8`, `HRMD`, `SEMC`)
   → Wavefront OBJ; self-describing vertex-stream layouts, planar buffers, u16 indices; `docs/messiah-mesh.md`
 - `repository.py` — resource repository: `Repository.records()`, `guid_file_id()`; names for GUID-keyed files
 - `files.py` (`wwm-files export|override|revert|revert-all`) — `export` is read-only; the rest write to the install (patch pack + `Patch.mpkdb`
