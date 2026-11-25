@@ -69,8 +69,10 @@ Observed formats: BC7 (dominant), R8G8B8A8, A16B16G16R16F. Format 55 with `raw_s
 has no local pixel data (streamed/HD asset).
 
 ### Other payloads
-`.MESSIAH` meshes, `CHAR::ANIM`, particle systems and Lua live inside standalone EZST
-blocks; shaders use `ZZZ4` (LZ4) + DXBC; audio is Wwise (`RIFF`/`BKHD`). Not handled here.
+`.MESSIAH` objects, `CHAR::ANIM`, particle systems and Lua live inside standalone EZST
+blocks; shaders use `ZZZ4` (LZ4) + DXBC; audio is Wwise (`RIFF`/`BKHD`).
+`.MESSIAH` is a generic serialized-object wrapper (magic + sub-type); its mesh-geometry
+sub-types decode to OBJ via `wwm-mesh` (`docs/messiah-mesh.md`). Anim/particles not handled.
 
 ### Obfuscated text files
 `HEX_`/`HEXB_` prefixed files (`patch_config.json`, `essential.txt`, `avatarinfo.txt`,
@@ -172,7 +174,7 @@ Python package `wwm` in `tools/wwm/` (`pyproject.toml`); each tool is a console 
   database before packages); `override`/`revert` change one entry through `Patch.mpkdb` or in its pack
   and undo it (journalled). Used to verify the resolution and stored-form findings in `docs/patching.md`.
 - `tests/` — pytest on synthetic data: file ids, codecs, block packs, override/export/revert round trips
-- `docs/` — format notes: `file-id.md`, `hd-store.md`, `patching.md`, `resource-names.md`, `chat-markup.md`
+- `docs/` — format notes: `file-id.md`, `hd-store.md`, `patching.md`, `resource-names.md`, `chat-markup.md`, `lighting.md`
 - `mpk/` — Rust: v1 reader (Diablo Immortal era) and v3 `.mpkinfo` parser
 - `texture/` — Rust: EZST codec, texture container parser, PNG/DDS conversion
   (`cargo run -p messiah-texture -- <payload files or dir> -o OUT [--dds]`)
